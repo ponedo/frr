@@ -63,7 +63,7 @@ DECLARE_HEAP(event_timer_list, struct event, timeritem, event_timer_cmp);
 #include <mach/mach_time.h>
 #endif
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 /* This macro is supposed to be called with m->mtx held */
@@ -412,7 +412,7 @@ ALIAS (service_walltime_warning,
        "Set up miscellaneous service\n"
        "Warn for tasks exceeding total wallclock threshold\n")
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 static void show_thread_poll_helper(struct vty *vty, struct event_loop *m)
@@ -610,7 +610,7 @@ struct event_loop *event_master_create(const char *name)
 {
 	struct event_loop *rv;
 	struct rlimit limit;
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	struct epoll_event pipe_read_ev;
@@ -673,7 +673,7 @@ struct event_loop *event_master_create(const char *name)
 	set_nonblocking(rv->io_pipe[0]);
 	set_nonblocking(rv->io_pipe[1]);
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	rv->awakened = false;
@@ -833,7 +833,7 @@ void event_master_free(struct event_loop *m)
 	pthread_cond_destroy(&m->cancel_cond);
 	close(m->io_pipe[0]);
 	close(m->io_pipe[1]);
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_DEL, m->io_pipe[0], NULL);
@@ -845,7 +845,7 @@ void event_master_free(struct event_loop *m)
 	hash_clean_and_free(&m->cpu_record, cpu_record_hash_free);
 
 	XFREE(MTYPE_EVENT_MASTER, m->name);
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	XFREE(MTYPE_EVENT_MASTER, m->handler.events);
@@ -979,7 +979,7 @@ static void thread_free(struct event_loop *master, struct event *thread)
 	XFREE(MTYPE_THREAD, thread);
 }
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 /*
@@ -1146,13 +1146,13 @@ static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 {
 	sigset_t origsigs;
 	unsigned char trash[64];
-#if defined(DISABLE_EPOLL) ||                                                  \
+#if !defined(USE_EPOLL) ||                                                     \
 	!(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||             \
 	  defined(HAVE_EPOLL_PWAIT2))
 	nfds_t count = m->handler.copycount;
 #endif
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	if (m->handler.event_count == 0)
@@ -1190,7 +1190,7 @@ static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 	rcu_read_unlock();
 	rcu_assert_read_unlocked();
 
-#if defined(DISABLE_EPOLL) ||                                                  \
+#if !defined(USE_EPOLL) ||                                                     \
 	!(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||             \
 	  defined(HAVE_EPOLL_PWAIT2))
 	/* add poll pipe poker */
@@ -1200,7 +1200,7 @@ static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 	m->handler.copy[count].revents = 0x00;
 #endif
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	/* We need to deal with a signal-handling race here: we
@@ -1235,7 +1235,7 @@ static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 		pthread_sigmask(SIG_SETMASK, NULL, &origsigs);
 	}
 
-#if !defined(DISABLE_EPOLL) && defined(HAVE_EPOLL_PWAIT2)
+#if defined(USE_EPOLL) && defined(HAVE_EPOLL_PWAIT2)
 	struct timespec ts, *tsp;
 	if (timeout >= 0) {
 		ts.tv_sec = timeout / 1000;
@@ -1247,11 +1247,11 @@ static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 	num = epoll_pwait2(m->handler.epoll_fd, m->handler.revents,
 			   m->handler.event_count, tsp, &origsigs);
 	pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
-#elif !defined(DISABLE_EPOLL) && defined(HAVE_EPOLL_PWAIT)
+#elif defined(USE_EPOLL) && defined(HAVE_EPOLL_PWAIT)
 	num = epoll_pwait(m->handler.epoll_fd, m->handler.revents,
 			  m->handler.event_count, timeout, &origsigs);
 	pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
-#elif !defined(DISABLE_EPOLL) && defined(HAVE_EPOLL_WAIT)
+#elif defined(USE_EPOLL) && defined(HAVE_EPOLL_WAIT)
 	/* Not ideal - there is a race after we restore the signal mask */
 	pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
 	num = epoll_wait(m->handler.epoll_fd, m->handler.revents,
@@ -1279,7 +1279,7 @@ done:
 	if (num < 0 && errno == EINTR)
 		*eintr_p = true;
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	if (num > 0 && m->awakened) {
@@ -1304,7 +1304,7 @@ void _event_add_read_write(const struct xref_eventsched *xref,
 			   struct event_loop *m, void (*func)(struct event *),
 			   void *arg, int fd, struct event **t_ptr)
 {
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	struct frr_epoll_event *new_frr_ev;
@@ -1599,7 +1599,7 @@ void _event_add_event(const struct xref_eventsched *xref, struct event_loop *m,
 
 /* Thread cancellation ------------------------------------------------------ */
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 /**
@@ -1901,7 +1901,7 @@ static void cancel_arg_helper(struct event_loop *master,
 	struct event *t;
 	nfds_t i;
 	int fd;
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	struct frr_epoll_event *frr_ev;
@@ -1938,7 +1938,7 @@ static void cancel_arg_helper(struct event_loop *master,
 		return;
 
 	/* Check the io tasks */
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	/* Traverse through master->handler.event_ptrs */
@@ -2100,7 +2100,7 @@ static void do_event_cancel(struct event_loop *master)
 		/* Determine the appropriate queue to cancel the thread from */
 		switch (thread->type) {
 		case EVENT_READ:
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 			event_cancel_exist_rw(master, thread->u.fd, EPOLLIN);
@@ -2111,7 +2111,7 @@ static void do_event_cancel(struct event_loop *master)
 			thread_array = master->read;
 			break;
 		case EVENT_WRITE:
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 			event_cancel_exist_rw(master, thread->u.fd, EPOLLOUT);
@@ -2328,7 +2328,7 @@ static struct event *thread_run(struct event_loop *m, struct event *thread,
 	return fetch;
 }
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 static int thread_process_io_helper(struct event_loop *m, struct event *thread,
@@ -2737,7 +2737,7 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 		    (tw && !timercmp(tw, &zerotime, >)))
 			tw = &zerotime;
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 		if (!tw && m->handler.event_count == 0 &&
@@ -2785,7 +2785,7 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 			}
 
 			/* else die */
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 			flog_err(EC_LIB_SYSTEM_CALL, "epoll_wait() error: %s",
@@ -2804,7 +2804,7 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 		thread_process_timers(m, &now);
 
 		/* Post I/O to ready queue. */
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 		if (m->handler.regular_revent_count > 0)

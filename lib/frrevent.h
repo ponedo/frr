@@ -11,7 +11,7 @@
 #include <zebra.h>
 #include <pthread.h>
 #include <poll.h>
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 #include <sys/epoll.h>
@@ -47,7 +47,7 @@ struct rusage_t {
 PREDECL_LIST(event_list);
 PREDECL_HEAP(event_timer_list);
 
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 struct frr_epoll_event {
@@ -174,7 +174,7 @@ struct event_loop {
 	pthread_cond_t cancel_cond;
 	struct hash *cpu_record;
 	int io_pipe[2];
-#if !(defined(DISABLE_EPOLL)) &&                                               \
+#if defined(USE_EPOLL) &&                                                      \
 	(defined(HAVE_EPOLL_WAIT) || defined(HAVE_EPOLL_PWAIT) ||              \
 	 defined(HAVE_EPOLL_PWAIT2))
 	bool awakened;
