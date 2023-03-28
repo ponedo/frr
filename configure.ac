@@ -1517,6 +1517,15 @@ AC_SUBST([LIBM])
 AC_CHECK_FUNCS([ppoll], [
   AC_DEFINE([HAVE_PPOLL], [1], [have Linux/BSD ppoll()])
 ])
+AC_CHECK_FUNCS([epoll_wait], [
+  AC_DEFINE([HAVE_EPOLL_WAIT], [1], [have Linux epoll_wait()])
+])
+AC_CHECK_FUNCS([epoll_pwait], [
+  AC_DEFINE([HAVE_EPOLL_PWAIT], [1], [have Linux epoll_pwait()])
+])
+AC_CHECK_FUNCS([epoll_pwait2], [
+  AC_DEFINE([HAVE_EPOLL_PWAIT2], [1], [have Linux epoll_pwait2()])
+])
 AC_CHECK_FUNCS([pollts], [
   AC_DEFINE([HAVE_POLLTS], [1], [have NetBSD pollts()])
 ])
