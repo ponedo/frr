@@ -5,6 +5,9 @@
 
 #include <zebra.h>
 
+#include "sigevent.h"
+#include "log.h"
+
 #include <signal.h>
 #include <sigevent.h>
 #include <log.h>
@@ -21,8 +24,13 @@
 #include <ucontext.h>
 #endif /* HAVE_UCONTEXT_H */
 
+DEFINE_MTYPE_STATIC(LIB, SIGCATHER_SIGNALS, "singal catcher");
 
-/* master signals descriptor struct */
+/* main pthread's info */
+static sigset_t main_pthread_oldsigs;
+struct event_loop *main_pthread_master;
+
+/* main pthread's signals descriptor struct */
 static struct frr_sigevent_master_t {
 	struct event *t;
 
@@ -32,31 +40,50 @@ static struct frr_sigevent_master_t {
 	volatile sig_atomic_t caught;
 } sigmaster;
 
-/* Generic signal handler
- * Schedules signal event thread
- */
-static void frr_signal_handler(int signo)
+static pthread_mutex_t sigmaster_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+/* signal catcher thread */
+struct frr_pthread *sigcatcher_fpt;
+
+struct sigcatcher_signal_t {
+	int signal;	    /* signal number    */
+	volatile sig_atomic_t caught; /* private member   */
+};
+
+/* signal catcher */
+static struct sigcatcher_t {
+	struct sigcatcher_signal_t *signals;
+	int sigc;
+	volatile sig_atomic_t caught;
+} sigcatcher;
+
+/* ------------ Signal catcher thread's handling--------------------- */
+
+/* Signal catcher thread's signal handler */
+static void sigcatcher_signal_handler(int signo)
 {
 	int i;
-	struct frr_signal_t *sig;
+	struct sigcatcher_signal_t *sig;
 
-	for (i = 0; i < sigmaster.sigc; i++) {
-		sig = &(sigmaster.signals[i]);
+	for (i = 0; i < sigcatcher.sigc; i++) {
+		sig = &(sigcatcher.signals[i]);
 
 		if (sig->signal == signo)
 			sig->caught = 1;
 	}
 
-	sigmaster.caught = 1;
+	sigcatcher.caught = 1;
 }
 
 /*
+ * Signal catcher thread's checking routine
+ *
  * Check whether any signals have been received and are pending. This is done
  * with the application's key signals blocked. The complete set of signals
  * is returned in 'setp', so the caller can restore them when appropriate.
  * If there are pending signals, returns 'true', 'false' otherwise.
  */
-bool frr_sigevent_check(sigset_t *setp)
+static bool sigcatcher_sigevent_check(sigset_t *setp)
 {
 	sigset_t blocked;
 	int i;
@@ -66,21 +93,21 @@ bool frr_sigevent_check(sigset_t *setp)
 	sigemptyset(&blocked);
 
 	/* Set up mask of application's signals */
-	for (i = 0; i < sigmaster.sigc; i++)
-		sigaddset(&blocked, sigmaster.signals[i].signal);
+	for (i = 0; i < sigcatcher.sigc; i++)
+		sigaddset(&blocked, sigcatcher.signals[i].signal);
 
 	pthread_sigmask(SIG_BLOCK, &blocked, setp);
 
 	/* Now that the application's signals are blocked, test. */
-	ret = (sigmaster.caught != 0);
+	ret = (sigcatcher.caught != 0);
 
 	return ret;
 }
 
-/* check if signals have been caught and run appropriate handlers */
-int frr_sigevent_process(void)
+/* Notify catched signals to main pthread */
+static int sigcatcher_sigevent_notify(void)
 {
-	struct frr_signal_t *sig;
+	struct sigcatcher_signal_t *sig;
 	int i;
 #ifdef SIGEVENT_BLOCK_SIGNALS
 	/* shouldn't need to block signals, but potentially may be needed */
@@ -102,6 +129,194 @@ int frr_sigevent_process(void)
 	}
 #endif /* SIGEVENT_BLOCK_SIGNALS */
 
+	/* Modify sigcatcher */
+	if (sigcatcher.caught > 0) {
+		sigcatcher.caught = 0;
+		/* must not read or set sigcatcher.caught after here,
+		 * race condition with per-sig caught flags if one does
+		 */
+
+		frr_with_mutex(&sigmaster_mtx) {
+			for (i = 0; i < sigcatcher.sigc; i++) {
+				sig = &(sigcatcher.signals[i]);
+
+				if (sig->caught > 0) {
+					sig->caught = 0;
+					sigmaster.signals[i].caught = 1;
+				}
+			}
+			sigmaster.caught = 1;
+		}
+	}
+
+	/* Notify the main pthread */
+	AWAKEN(main_pthread_master);
+
+#ifdef SIGEVENT_BLOCK_SIGNALS
+	if (sigprocmask(SIG_UNBLOCK, &oldmask, NULL) < 0)
+		return -1;
+#endif /* SIGEVENT_BLOCK_SIGNALS */
+
+	return 0;
+}
+
+/*
+ * Entrypoint of the signal catcher thread
+ *
+ * Note that we are not using normal FRR pthread mechanics and are
+ * not using fpt_run.
+ */
+void *sigcatcher_start(void *arg)
+{
+	struct frr_pthread *fpt = arg;
+	sigset_t origsigs, blocksigs;
+	int i, sigc, timeout = -1;
+	struct pollfd pfds[1];
+
+	fpt->master->owner = pthread_self();
+
+	/*
+	 * The RCU mechanism for each pthread is initialized in a "locked"
+	 * state. That's ok for pthreads using the frr_pthread,
+	 * event_fetch event loop, because that event loop unlocks regularly.
+	 * For foreign pthreads, the lock needs to be unlocked so that the
+	 * background rcu pthread can run.
+	 */
+	rcu_read_unlock();
+
+	/* Initialize sigcatcher */
+	frr_with_mutex(&sigmaster_mtx) {
+		sigc = sigmaster.sigc;
+		sigcatcher.sigc = sigc;
+	}
+	sigcatcher.signals = XCALLOC(MTYPE_SIGCATHER_SIGNALS, sigc * sizeof(struct sigcatcher_signal_t));
+	frr_with_mutex(&sigmaster_mtx) {
+		for (i = 0; i < sigc; i++) {
+			sigcatcher.signals[i].signal = sigmaster.signals[i].signal;
+			sigcatcher.signals[i].caught = 0;
+		}
+	}
+	
+	/* Unblock all signals on the sigcatcher pthread */
+	sigfillset(&blocksigs);
+	pthread_sigmask(SIG_UNBLOCK, &blocksigs, &main_pthread_oldsigs);
+
+	/* add poll pipe poker */
+	pfds[0].fd = fpt->master->io_pipe[0];
+	pfds[0].events = POLLIN;
+	pfds[0].revents = 0x00;
+
+	/*
+	 * We are not using normal FRR pthread mechanics and are
+	 * not using fpt_run
+	 */
+	frr_pthread_set_name(fpt);
+	
+	/* notify anybody waiting on us that we are done starting up */
+	frr_pthread_notify_running(fpt);
+
+	while (1) {
+		/*
+		 * If any external signals are catched, change sigmaster accordingly,
+		 * and notify the main pthread
+		 */
+		sigemptyset(&origsigs);
+		if (sigcatcher_sigevent_check(&origsigs)) {
+			/* Signal to process - restore signal mask and return */
+			pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
+			sigcatcher_sigevent_notify();
+			continue;
+		}
+
+		if (!atomic_load_explicit(&fpt->running, memory_order_relaxed))
+			break;
+		
+		/*
+		* Polling is only awakened by either of two conditions:
+		* 1. external signals arrives
+		* 2. the sigcatcher thread is ended by sigcatcher_stop
+		*/
+#if defined(HAVE_PPOLL)
+		struct timespec ts, *tsp;
+
+		if (timeout >= 0) {
+			ts.tv_sec = timeout / 1000;
+			ts.tv_nsec = (timeout % 1000) * 1000000;
+			tsp = &ts;
+		} else
+			tsp = NULL;
+
+		ppoll(pfds, 1, tsp, &origsigs);
+		pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
+#else
+		/* Not ideal - there is a race after we restore the signal mask */
+		pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
+		poll(pfds, 1, timeout);
+#endif
+	}
+
+	/* About to exit, block signals on sigcatcher threads */
+	sigfillset(&blocksigs);
+	pthread_sigmask(SIG_BLOCK, &blocksigs, NULL);
+
+	return NULL;
+}
+
+/* ------------- Signal catcher thread's code ends here ------------- */
+
+/* -------- Main pthread's sigevent handling ------------------------ */
+
+int sigcatcher_stop(struct frr_pthread *fpt, void **result)
+{
+	atomic_store_explicit(&fpt->running, false, memory_order_relaxed);
+	AWAKEN(fpt->master);
+	pthread_join(sigcatcher_fpt->thread, result);
+
+	/* Unblock signals on main pthread */
+	pthread_sigmask(SIG_SETMASK, &main_pthread_oldsigs, NULL);
+	return 0;
+}
+
+/* Initialize and run the signal catcher thread */
+void sigcatcher_pthread_run(struct event_loop *arg)
+{
+	sigset_t blocksigs;
+	struct frr_pthread_attr sigcatcher_attr = {
+		.start = sigcatcher_start,
+		.stop = sigcatcher_stop,
+	};
+	sigcatcher_fpt = frr_pthread_new(&sigcatcher_attr, "Signal catcher thread", "sigcatcher");
+
+	/* Initialize */
+	main_pthread_master = arg;
+
+	/* Block all signals on the main pthread */
+	sigfillset(&blocksigs);
+	pthread_sigmask(SIG_BLOCK, &blocksigs, &main_pthread_oldsigs);
+
+	/* Run the signal catcher */
+	frr_pthread_run(sigcatcher_fpt, NULL);
+	frr_pthread_wait_running(sigcatcher_fpt);
+}
+
+/* Check whether any signals have been received and are pending */
+bool frr_sigevent_check(void)
+{
+	bool ret;
+	frr_with_mutex(&sigmaster_mtx) {
+		ret = (sigmaster.caught != 0);
+	}
+	return ret;
+}
+
+/* check if signals have been caught and run appropriate handlers */
+int frr_sigevent_process(void)
+{
+	struct frr_signal_t *sig;
+	int i;
+
+	pthread_mutex_lock(&sigmaster_mtx);
+
 	if (sigmaster.caught > 0) {
 		sigmaster.caught = 0;
 		/* must not read or set sigmaster.caught after here,
@@ -113,33 +328,19 @@ int frr_sigevent_process(void)
 
 			if (sig->caught > 0) {
 				sig->caught = 0;
-				if (sig->handler)
+				if (sig->handler) {
+					pthread_mutex_unlock(&sigmaster_mtx);
 					sig->handler();
+					pthread_mutex_lock(&sigmaster_mtx);
+				}
 			}
 		}
 	}
 
-#ifdef SIGEVENT_BLOCK_SIGNALS
-	if (sigprocmask(SIG_UNBLOCK, &oldmask, NULL) < 0)
-		return -1;
-#endif /* SIGEVENT_BLOCK_SIGNALS */
+	pthread_mutex_unlock(&sigmaster_mtx);
 
 	return 0;
 }
-
-#ifdef SIGEVENT_SCHEDULE_THREAD
-/* timer thread to check signals. shouldn't be needed */
-void frr_signal_timer(struct event *t)
-{
-	struct frr_sigevent_master_t *sigm;
-
-	sigm = EVENT_ARG(t);
-	sigm->t = NULL;
-	event_add_timer(sigm->t->master, frr_signal_timer, &sigmaster,
-			FRR_SIGNAL_TIMER_INTERVAL, &sigm->t);
-	frr_sigevent_process();
-}
-#endif /* SIGEVENT_SCHEDULE_THREAD */
 
 /* Initialization of signal handles. */
 /* Signal wrapper. */
@@ -149,9 +350,10 @@ static int signal_set(int signo)
 	struct sigaction sig;
 	struct sigaction osig;
 
-	sig.sa_handler = &frr_signal_handler;
+	sig.sa_handler = &sigcatcher_signal_handler;
 	sigfillset(&sig.sa_mask);
 	sig.sa_flags = 0;
+
 	if (signo == SIGALRM) {
 #ifdef SA_INTERRUPT
 		sig.sa_flags |= SA_INTERRUPT; /* SunOS */
@@ -360,12 +562,18 @@ void signal_init(struct event_loop *m, int sigc, struct frr_signal_t signals[])
 		i++;
 	}
 
-	sigmaster.sigc = sigc;
-	sigmaster.signals = signals;
+	frr_with_mutex(&sigmaster_mtx) {
+		sigmaster.sigc = sigc;
+		sigmaster.signals = signals;
+	}
 
 #ifdef SIGEVENT_SCHEDULE_THREAD
-	sigmaster.t = NULL;
-	event_add_timer(m, frr_signal_timer, &sigmaster,
-			FRR_SIGNAL_TIMER_INTERVAL, &sigmaster.t);
+	frr_with_mutex(&sigmaster_mtx) {
+		sigmaster.t = NULL;
+		event_add_timer(m, frr_signal_timer, &sigmaster,
+				FRR_SIGNAL_TIMER_INTERVAL, &sigmaster.t);
+	}
 #endif /* SIGEVENT_SCHEDULE_THREAD */
 }
+
+/* --------- Main pthread's sigevent handling code ends here -------- */

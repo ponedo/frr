@@ -1212,6 +1212,8 @@ void frr_run(struct event_loop *master)
 	/* end fixed stderr startup logging */
 	zlog_startup_end();
 
+	sigcatcher_pthread_run(master);
+
 	struct event thread;
 	while (event_fetch(master, &thread))
 		event_call(&thread);

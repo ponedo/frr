@@ -57,12 +57,6 @@ static int event_timer_cmp(const struct event *a, const struct event *b)
 
 DECLARE_HEAP(event_timer_list, struct event, timeritem, event_timer_cmp);
 
-#define AWAKEN(m)                                                              \
-	do {                                                                   \
-		const unsigned char wakebyte = 0x01;                           \
-		write(m->io_pipe[1], &wakebyte, 1);                            \
-	} while (0)
-
 /* control variable for initializer */
 static pthread_once_t init_once = PTHREAD_ONCE_INIT;
 pthread_key_t thread_current;
@@ -859,7 +853,6 @@ static void thread_free(struct event_loop *master, struct event *thread)
 static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 		   bool *eintr_p)
 {
-	sigset_t origsigs;
 	unsigned char trash[64];
 	nfds_t count = m->handler.copycount;
 
@@ -900,51 +893,12 @@ static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 	m->handler.copy[count].events = POLLIN;
 	m->handler.copy[count].revents = 0x00;
 
-	/* We need to deal with a signal-handling race here: we
-	 * don't want to miss a crucial signal, such as SIGTERM or SIGINT,
-	 * that may arrive just before we enter poll(). We will block the
-	 * key signals, then check whether any have arrived - if so, we return
-	 * before calling poll(). If not, we'll re-enable the signals
-	 * in the ppoll() call.
-	 */
-
-	sigemptyset(&origsigs);
-	if (m->handle_signals) {
-		/* Main pthread that handles the app signals */
-		if (frr_sigevent_check(&origsigs)) {
-			/* Signal to process - restore signal mask and return */
-			pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
-			num = -1;
-			*eintr_p = true;
-			goto done;
-		}
-	} else {
-		/* Don't make any changes for the non-main pthreads */
-		pthread_sigmask(SIG_SETMASK, NULL, &origsigs);
-	}
-
-#if defined(HAVE_PPOLL)
-	struct timespec ts, *tsp;
-
-	if (timeout >= 0) {
-		ts.tv_sec = timeout / 1000;
-		ts.tv_nsec = (timeout % 1000) * 1000000;
-		tsp = &ts;
-	} else
-		tsp = NULL;
-
-	num = ppoll(m->handler.copy, count + 1, tsp, &origsigs);
-	pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
-#else
-	/* Not ideal - there is a race after we restore the signal mask */
-	pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
 	num = poll(m->handler.copy, count + 1, timeout);
-#endif
 
-done:
-
-	if (num < 0 && errno == EINTR)
-		*eintr_p = true;
+	if (m->handle_signals)
+		/* Main pthread that handles the app signals */
+		if (frr_sigevent_check())
+			*eintr_p = true;
 
 	if (num > 0 && m->handler.copy[count].revents != 0 && num--)
 		while (read(m->io_pipe[0], &trash, sizeof(trash)) > 0)
@@ -1773,7 +1727,7 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 	struct timeval zerotime = {0, 0};
 	struct timeval tv;
 	struct timeval *tw = NULL;
-	bool eintr_p = false;
+	bool eintr_p = false, io_pending = false;
 	int num = 0;
 
 	do {
@@ -1839,30 +1793,39 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 			break;
 		}
 
-		/*
-		 * Copy pollfd array + # active pollfds in it. Not necessary to
-		 * copy the array size as this is fixed.
-		 */
-		m->handler.copycount = m->handler.pfdcount;
-		memcpy(m->handler.copy, m->handler.pfds,
-		       m->handler.copycount * sizeof(struct pollfd));
+		if (!io_pending) {
+			/*
+			* Copy pollfd array + # active pollfds in it. Not necessary to
+			* copy the array size as this is fixed.
+			*/
+			m->handler.copycount = m->handler.pfdcount;
+			memcpy(m->handler.copy, m->handler.pfds,
+				m->handler.copycount * sizeof(struct pollfd));
 
-		pthread_mutex_unlock(&m->mtx);
-		{
-			eintr_p = false;
-			num = fd_poll(m, tw, &eintr_p);
+			pthread_mutex_unlock(&m->mtx);
+			{
+				eintr_p = false;
+				num = fd_poll(m, tw, &eintr_p);
+			}
+			pthread_mutex_lock(&m->mtx);
 		}
-		pthread_mutex_lock(&m->mtx);
+
+		/* Handle any signals received */
+		if (eintr_p) {
+			/*
+			 * If there are pending I/O requests, we should disable
+			 * polling and handle these requests in the next loop.
+			 * 
+			 */
+			if (num > 0)
+				io_pending = true;
+			pthread_mutex_unlock(&m->mtx);
+			/* loop around to signal handler */
+			continue;
+		}
 
 		/* Handle any errors received in poll() */
-		if (num < 0) {
-			if (eintr_p) {
-				pthread_mutex_unlock(&m->mtx);
-				/* loop around to signal handler */
-				continue;
-			}
-
-			/* else die */
+		if (num < 0) { /* die */
 			flog_err(EC_LIB_SYSTEM_CALL, "poll() error: %s",
 				 safe_strerror(errno));
 			pthread_mutex_unlock(&m->mtx);
@@ -1875,8 +1838,10 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 		thread_process_timers(m, &now);
 
 		/* Post I/O to ready queue. */
-		if (num > 0)
+		if (num > 0) {
 			thread_process_io(m, num);
+			io_pending = false;
+		}
 
 		pthread_mutex_unlock(&m->mtx);
 

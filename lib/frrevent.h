@@ -70,6 +70,12 @@ struct xref_eventsched {
 
 PREDECL_HASH(cpu_records);
 
+#define AWAKEN(m)                                                              \
+	do {                                                                   \
+		const unsigned char wakebyte = 0x01;                           \
+		write((m)->io_pipe[1], &wakebyte, 1);                            \
+	} while (0)
+
 /* Master of the theads. */
 struct event_loop {
 	char *name;
