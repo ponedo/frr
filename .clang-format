@@ -14,7 +14,7 @@ AlignConsecutiveAssignments: false
 AlignConsecutiveDeclarations: false
 # FRR: Right
 AlignEscapedNewlines: Right
-AlignOperands: Align
+AlignOperands: true
 # FRR: true
 AlignTrailingComments: true
 # FRR: true

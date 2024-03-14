@@ -1,0 +1,200 @@
+******************************************************************************
+Test Target Summary                                                  Pass Fail
+******************************************************************************
+FILE: scripts/check_linux_vrf.py
+1    r1     VRF cust1 intf up                                        1    0
+2    r1     VRF cust1 IP intf up                                     1    0
+3    r1     VRF cust1 IP config                                      1    0
+4    r1     VRF cust1 interface route                                1    0
+5    r3     VRF cust1 intf up                                        1    0
+6    r3     VRF cust1 IP intf up                                     1    0
+7    r3     VRF cust1 IP config                                      1    0
+8    r3     VRF cust1 interface route                                1    0
+9    r4     VRF cust1 intf up                                        1    0
+10   r4     VRF cust1 IP intf up                                     1    0
+11   r4     VRF cust1 IP config                                      1    0
+12   r4     VRF cust1 interface route                                1    0
+13   r4     VRF cust2 up                                             1    0
+14   r4     VRF cust1 IP config                                      1    0
+15   r4     VRF cust2 interface route                                1    0
+16   ce1    CE interface route                                       1    0
+17   ce1    CE->PE ping +0.00 secs                                   1    0
+18   ce2    CE interface route                                       1    0
+19   ce2    CE->PE ping +0.00 secs                                   1    0
+20   ce3    CE interface route                                       1    0
+21   ce3    CE->PE ping +0.00 secs                                   1    0
+22   ce4    VRF cust2 up                                             1    0
+23   ce4    CE interface route                                       1    0
+24   ce4    CE4->PE4 ping +0.01 secs                                 1    0
+FILE: scripts/adjacencies.py
+25   ce1    Adjacencies up +0.03 secs                                1    0
+26   ce2    Adjacencies up +0.03 secs                                1    0
+27   ce3    Adjacencies up +0.03 secs                                1    0
+28   ce4    Adjacencies up +0.03 secs                                1    0
+29   r1     PE->P2 (loopback) ping +7.58 secs                        1    0
+30   r3     PE->P2 (loopback) ping +5.06 secs                        1    0
+31   r4     PE->P2 (loopback) ping +0.00 secs                        1    0
+32   r2     Core adjacencies up +3.78 secs                           1    0
+33   r1     Core adjacencies up +0.04 secs                           1    0
+34   r3     Core adjacencies up +0.03 secs                           1    0
+35   r4     Core adjacencies up +0.03 secs                           1    0
+36   r1     All adjacencies up                                       1    0
+37   r3     All adjacencies up                                       1    0
+38   r4     All adjacencies up                                       1    0
+39   r1     PE->PE3 (loopback) ping +0.00 secs                       1    0
+40   r1     PE->PE4 (loopback) ping +0.01 secs                       1    0
+41   r4     PE->PE3 (loopback) ping +0.00 secs                       1    0
+FILE: scripts/notification_check.py
+FILE: scripts/check_routes.py
+42   ce1    Cust 1 routes in ce1                                     1    0
+43   ce2    Cust 2 routes in ce1                                     1    0
+44   ce3    Cust 3 routes in ce1                                     1    0
+45   ce4    Cust 4 routes in ce1                                     1    0
+46   r1     Customer 1 routes in r1 vrf                              1    0
+47   r3     Customer 1 routes in r3 vrf                              1    0
+48   r4     Customer 1 routes in r4 vrf                              1    0
+49   r4     Customer 2 routes in r4 vrf                              1    0
+50   r1     Core Unicast SAFI clean                                  1    0
+51   r2     Core Unicast SAFI clean                                  1    0
+52   r3     Core Unicast SAFI clean                                  1    0
+53   r4     Core Unicast SAFI clean                                  1    0
+54   r1     vrf->vpn routes                                          1    0
+55   r3     vrf->vpn routes                                          1    0
+56   r4     vrf->vpn routes                                          1    0
+57   r1     vrf labels                                               1    0
+58   r3     vrf labels                                               1    0
+59   r4     vrf labels                                               1    0
+60   r2     Customer routes in provider vpn core                     1    0
+61   r1     Remote Customer routes in R1 vpn                         1    0
+62   r3     Remote Customer routes in R3 vpn                         1    0
+63   r4     Remote Customer routes in R4 vpn                         1    0
+64   r1     Ensure 5.1.0.0 shows up on r1 +0.03 secs                 1    0
+65   r1     Ensure 5.1.1.0 shows up on r1 +0.04 secs                 1    0
+66   r1     Ensure 5.1.2.0 shows up on r1 +2.71 secs                 1    0
+67   r1     Ensure 5.1.3.0 shows up on r1 +0.04 secs                 1    0
+68   r1     Ensure 5.4.2.0 shows up on r1 +0.03 secs                 1    0
+69   r1     Ensure 5.4.3.0 shows up on r1 +0.03 secs                 1    0
+70   r1     Ensure 6.0.1.0 shows up on r1 +0.03 secs                 1    0
+71   r1     Ensure 6.0.2.0 shows up on r1 +0.03 secs                 1    0
+72   r1     Ensure 99.0.0.1 shows up on r1 +0.03 secs                1    0
+73   r1     Ensure 99.0.0.2 shows up on r1 +0.03 secs                1    0
+74   r1     Ensure 99.0.0.3 shows up on r1 +0.03 secs                1    0
+75   r1     Ensure 99.0.0.4 shows up on r1 +0.03 secs                1    0
+76   r1     Customer 1 routes in r1 vrf (2)                          1    0
+77   r3     Ensure 5.1.0.0 shows up r3 +0.04 secs                    1    0
+78   r3     Ensure 5.1.1.0 shows up on r3 +0.03 secs                 1    0
+79   r3     Ensure 5.1.2.0 shows up on r3 +0.04 secs                 1    0
+80   r3     Ensure 5.1.3.0 shows up on r3 +0.03 secs                 1    0
+81   r3     Ensure 5.4.3.0 shows up on r3 +0.04 secs                 1    0
+82   r3     Ensure 5.4.3.0 shows up on r3 +0.03 secs                 1    0
+83   r3     Ensure 5.4.3.0 shows up on r3 +0.03 secs                 1    0
+84   r3     Ensure 6.0.1.0 shows up on r3 +0.04 secs                 1    0
+85   r3     Ensure 6.0.2.0 shows up on r3 +0.03 secs                 1    0
+86   r3     Ensure 99.0.0.1 shows up on r3 +0.03 secs                1    0
+87   r3     Ensure 99.0.0.3 shows up on r3 +0.04 secs                1    0
+88   r3     Ensure 99.0.0.4 shows up on r3 +0.04 secs                1    0
+89   r3     Customer 1 routes in r3 vrf (2)                          1    0
+90   r4     Ensure 5.1.0.0 shows up on r4 +0.03 secs                 1    0
+91   r4     Ensure 5.1.1.0 shows up on r4 +0.03 secs                 1    0
+92   r4     Ensure 6.0.1.0 shows up on r4 +0.03 secs                 1    0
+93   r4     Ensure 6.0.2.0 shows up on r4 +0.03 secs                 1    0
+94   r4     Ensure 99.0.0.1 shows up on r4 +0.03 secs                1    0
+95   r4     Ensure 99.0.0.2 shows up on r4 +0.03 secs                1    0
+96   r4     Ensure 99.0.0.3 shows up on r4 +0.04 secs                1    0
+97   r4     Ensure 99.0.0.4 shows up on r4 +0.04 secs                1    0
+98   r4     Customer 1 routes in r4 vrf (2)                          1    0
+99   r4     Customer 2 routes in r4 vrf (2)                          1    0
+100  ce1    Local and remote routes +0.04 secs                       1    0
+101  ce1    Cust 1 routes from remote                                1    0
+102  ce2    Local and remote routes +0.04 secs                       1    0
+103  ce2    Cust 1 routes from remote                                1    0
+104  ce3    Local and remote routes +0.04 secs                       1    0
+105  ce3    Cust 1 routes from remote                                1    0
+106  ce4    Local and remote routes +0.04 secs                       1    0
+107  ce4    Cust 2 routes from remote                                1    0
+108  ce1    Redundant route 1 details                                1    0
+109  ce2    Redundant route 1 details                                1    0
+110  ce2    Redundant route 1 details                                1    0
+111  ce3    Redundant route 1 details                                1    0
+112  ce3    Redundant route 1 details                                1    0
+113  ce4    Redundant route 1 details                                1    0
+114  ce1    Route 2 details                                          1    0
+115  ce2    Route 2 details                                          1    0
+116  ce3    Route 2 details                                          1    0
+117  ce4    Redundant route 2 details                                1    0
+118  ce4    Redundant route 2 details                                1    0
+FILE: scripts/check_linux_mpls.py
+119  r2     See mpls route to r4 +0.01 secs                          1    0
+120  r2     See 17 as label to r4                                    1    0
+121  r2     See mpls route to r1 +0.01 secs                          1    0
+122  r2     See 18 as label to r1                                    1    0
+123  r1     VRF->MPLS PHP route installed                            1    0
+124  r4     VRF->MPLS PHP route installed                            1    0
+125  r1     MPLS->VRF route installed                                1    0
+126  r4     MPLS->VRF1 route installed                               1    0
+127  r4     MPLS->VRF2 route installed                               1    0
+128  ce1    CE->CE (loopback) ping - l3vpn+zebra case +0.00 secs     1    0
+129  ce1    CE->CE (loopback) ping +0.00 secs                        1    0
+130  r3     MPLS->VRF route installed                                1    0
+131  ce2    CE2->CE3 (loopback) ping +0.00 secs                      1    0
+132  ce3    CE3->CE4 (loopback) ping +0.00 secs                      1    0
+FILE: scripts/scale_up.py
+133  ce1    Adding 50000 routes                                      1    0
+134  ce2    Adding 50000 routes                                      1    0
+135  ce1    See all sharp routes in rib on ce1 +20.20 secs           1    0
+136  ce2    See all sharp routes in rib on ce2 +0.05 secs            1    0
+137  ce1    RXed last route, 10.0.195.79 +0.04 secs                  1    0
+138  ce1    See all sharp routes in BGP +0.10 secs                   1    0
+139  ce2    RXed last route, 10.0.195.79 +0.04 secs                  1    0
+140  ce2    See all sharp routes in BGP +0.10 secs                   1    0
+141  ce3    RXed last route, 10.0.195.79 +0.04 secs                  1    0
+142  ce3    See all sharp routes in BGP +0.10 secs                   1    0
+143  r1     RXed -> 10.0.195.79 from CE1 +0.04 secs                  1    0
+144  r3     RXed -> 10.0.195.79 from CE2 +0.04 secs                  1    0
+145  r1     see VPN safi -> 10.0.195.79 from CE1 +0.04 secs          1    0
+146  r3     see VPN safi -> 10.0.195.79 from CE2 +0.04 secs          1    0
+147  r3     see VPN safi -> 10.0.195.79 from CE1 +0.03 secs          1    0
+148  r1     see VPN safi -> 10.0.195.79 from CE2 +0.04 secs          1    0
+149  r4     see VPN safi -> 10.0.195.79 from CE1 +0.04 secs          1    0
+150  r4     see VPN safi -> 10.0.195.79 from CE2 +0.04 secs          1    0
+151  ce1    Route to 10.0.195.79 available +0.01 secs                1    0
+152  ce1    See 50000 linux routes +1.49 secs                        1    0
+153  ce2    Route to 10.0.195.79 available +0.01 secs                1    0
+154  ce2    See 50000 linux routes +1.44 secs                        1    0
+155  ce3    Route to 10.0.195.79 available +0.00 secs                1    0
+156  ce3    See 50000 linux routes +1.49 secs                        1    0
+157  r1     VRF route available +0.01 secs                           1    0
+158  r1     See 50000 linux routes +1.41 secs                        1    0
+159  r3     VRF route available +0.01 secs                           1    0
+160  r3     See 50000 linux routes +1.41 secs                        1    0
+161  r4     VRF route available +0.01 secs                           1    0
+162  r4     See 50000 linux routes +1.54 secs                        1    0
+163  ce1    BGPd heap: 7308 KiB --> 40 MiB (0.6538 KiB/vpn route)    1    0
+164  ce1    Zebra heap: 5196 KiB --> 32 MiB (0.5361 KiB/vpn route)   1    0
+165  ce2    BGPd heap: 7484 KiB --> 40 MiB (0.6503 KiB/vpn route)    1    0
+166  ce2    Zebra heap: 5340 KiB --> 43 MiB (0.7532 KiB/vpn route)   1    0
+167  ce3    BGPd heap: 7464 KiB --> 34 MiB (0.5307 KiB/vpn route)    1    0
+168  ce3    Zebra heap: 4924 KiB --> 32 MiB (0.5415 KiB/vpn route)   1    0
+169  r1     BGPd heap: 7796 KiB --> 230 MiB (4.4441 KiB/vpn route)   1    0
+170  r1     Zebra heap: 5728 KiB --> 32 MiB (0.5254 KiB/vpn route)   1    0
+171  r2     BGPd heap: 7636 KiB --> 215 MiB (4.1473 KiB/vpn route)   1    0
+172  r2     Zebra heap: 5756 KiB --> 5756 KiB (0.0 KiB/vpn route)    1    0
+173  r3     BGPd heap: 7748 KiB --> 230 MiB (4.445 KiB/vpn route)    1    0
+174  r3     Zebra heap: 5996 KiB --> 32 MiB (0.5201 KiB/vpn route)   1    0
+175  r4     BGPd heap: 8276 KiB --> 368 MiB (7.1945 KiB/vpn route)   1    0
+176  r4     Zebra heap: 5888 KiB --> 61 MiB (1.1022 KiB/vpn route)   1    0
+FILE: scripts/scale_down.py
+177  ce1    Looking for sharp routes                                 1    0
+178  ce3    See 50000 sharp routes                                   1    0
+179  ce1    BGP routes removed +30.38 secs                           1    0
+180  ce2    BGP routes removed +0.04 secs                            1    0
+181  ce3    BGP routes removed +0.03 secs                            1    0
+182  ce1    Linux routes removed +0.01 secs                          1    0
+183  ce2    Linux routes removed +0.01 secs                          1    0
+184  ce3    Linux routes removed +0.00 secs                          1    0
+185  r1     VRF route removed +0.01 secs                             1    0
+186  r3     VRF route removed +0.01 secs                             1    0
+187  r4     VRF route removed +0.01 secs                             1    0
+******************************************************************************
+Total 187                                                            187  0
+******************************************************************************

@@ -2369,52 +2369,48 @@ static inline void thread_process_io_inner_loop(struct event_loop *m,
 					 revents[*i].events, fd);
 	}
 
-	/*
-	 * If one of our file descriptors is garbage, do
-	 *   1. reset the fd in .events and .new_events
-	 *   2. remove the fd from epoll_fd set, .event_ptrs, and
-	 * .new_event_ptrs
-	 */
-	/* Reset the fd in .events and .new_events */
 	get_fd_stat(fd, &fd_stat, &fd_closed);
-	if (fd_closed || (revents[*i].events & (EPOLLHUP | EPOLLERR))) {
-		/* remove fd from epoll_fd set */
-		if (S_ISREG(fd_stat.st_mode)) {
-			for (j = 0; j < m->handler.regular_revent_count; j++) {
-				if (m->handler.regular_revents[j].data.fd == fd)
-					break;
-			}
-			if (j == m->handler.regular_revent_count) {
-				zlog_debug(
-					"[!] Canceling nonexistent regular rw job");
-				zlog_debug("[!] threadmaster: %s | fd: %d",
-					   m->name ? m->name : "", fd);
-				return;
-			}
-			memmove(m->handler.regular_revents + j,
-				m->handler.regular_revents + j + 1,
-				(m->handler.regular_revent_count - j - 1) *
-					sizeof(struct epoll_event));
-			m->handler.regular_revent_count--;
-			m->handler
-				.regular_revents[m->handler.regular_revent_count]
-				.data.fd = 0;
-			m->handler
-				.regular_revents[m->handler.regular_revent_count]
-				.events = 0;
-		} else if (!fd_closed &&
-			   -1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_DEL,
-					   fd, NULL)) {
-			zlog_debug(
-				"[!] epoll_ctl(EPOLL_CTL_DEL) error when handling EPOLLHUP/EPOLLERR");
-			zlog_debug("threadmaster: %s | fd: %d",
-				   m->name ? m->name : "", fd);
+	if (!(fd_closed || (revents[*i].events & (EPOLLHUP | EPOLLERR))))
+		/* The file descrpitor is still in use, no need to clean */
+		return;
+
+	/*
+	 * If one of our file descriptors is garbage,
+	 * unregister the fd from fd_handler.
+	 * 
+	 * a. if the fd is a regular fd, remove it from .regular_events
+	 * 
+	 * b. else, remove the fd from .events and .event_ptrs, as well
+	 * as from epoll set
+	 * 
+	 * Then, remove the fd from .new_events, and .new_event_ptrs
+	 */
+	if (S_ISREG(fd_stat.st_mode)) {
+		for (j = 0; j < m->handler.regular_revent_count; j++) {
+			if (m->handler.regular_revents[j].data.fd == fd)
+				break;
 		}
-		/* Remove the fd from epoll_fd set, .event_ptrs, and .new_event_ptrs */
+		if (j == m->handler.regular_revent_count) {
+			zlog_debug(
+				"[!] Canceling nonexistent regular rw job");
+			zlog_debug("[!] threadmaster: %s | fd: %d",
+					m->name ? m->name : "", fd);
+			return;
+		}
+		memmove(m->handler.regular_revents + j,
+			m->handler.regular_revents + j + 1,
+			(m->handler.regular_revent_count - j - 1) *
+				sizeof(struct epoll_event));
+		m->handler.regular_revent_count--;
+		m->handler
+			.regular_revents[m->handler.regular_revent_count]
+			.data.fd = 0;
+		m->handler
+			.regular_revents[m->handler.regular_revent_count]
+			.events = 0;
+	} else {
 		existing_frr_ev = m->handler.events + fd;
 		existing_ev = &existing_frr_ev->ev;
-		new_frr_ev = m->handler.new_events + fd;
-		new_ev = &new_frr_ev->ev;
 		if (existing_frr_ev->index >= 0) {
 			/* reset existing_frr_ev */
 			j_start = existing_frr_ev->index;
@@ -2423,28 +2419,40 @@ static inline void thread_process_io_inner_loop(struct event_loop *m,
 			existing_frr_ev->index = -1;
 			/* remove the entry in .event_ptrs */
 			for (j = j_start; j < m->handler.event_count - 1; j++) {
-				zlog_debug("event_ptrs j: %lu", j);
 				m->handler.event_ptrs[j] =
 					m->handler.event_ptrs[j + 1];
 				m->handler.event_ptrs[j]->index = j;
 			}
 			m->handler.event_count--;
 		}
-		if (new_frr_ev->index >= 0) {
-			/* reset new_frr_ev */
-			j_start = new_frr_ev->index;
-			new_ev->data.fd = 0;
-			new_ev->events = 0;
-			new_frr_ev->index = -1;
-			/* remove the entry in .new_event_ptrs */
-			for (j = j_start; j < m->handler.new_event_count - 1;
-			     j++) {
-				m->handler.new_event_ptrs[j] =
-					m->handler.new_event_ptrs[j + 1];
-				m->handler.new_event_ptrs[j]->index = j;
-			}
-			m->handler.new_event_count--;
+		/* if the fd is still not closed, remove the fd from epoll_fd set */
+		if (!fd_closed &&
+				-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_DEL,
+						fd, NULL)) {
+			/* Explicitly remove fd from epoll_fd set */
+			zlog_debug(
+				"[!] epoll_ctl(EPOLL_CTL_DEL) error when handling EPOLLHUP/EPOLLERR");
+			zlog_debug("threadmaster: %s | fd: %d",
+					m->name ? m->name : "", fd);
 		}
+	}
+
+	new_frr_ev = m->handler.new_events + fd;
+	new_ev = &new_frr_ev->ev;
+	if (new_frr_ev->index >= 0) {
+		/* reset new_frr_ev */
+		j_start = new_frr_ev->index;
+		new_ev->data.fd = 0;
+		new_ev->events = 0;
+		new_frr_ev->index = -1;
+		/* remove the entry in .new_event_ptrs */
+		for (j = j_start; j < m->handler.new_event_count - 1;
+				j++) {
+			m->handler.new_event_ptrs[j] =
+				m->handler.new_event_ptrs[j + 1];
+			m->handler.new_event_ptrs[j]->index = j;
+		}
+		m->handler.new_event_count--;
 	}
 }
 
@@ -2477,8 +2485,10 @@ static void thread_process_io(struct event_loop *m, unsigned int num,
 		return;
 	}
 
-	for (i = 0; i < num; ++i)
+	for (i = 0; i < num; ++i) {
+		zlog_debug("regular %d, i: %lu",regular, i);
 		thread_process_io_inner_loop(m, num, revents, &i, &ready);
+	}
 
 	m->last_read++;
 }

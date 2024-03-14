@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="35.196" timestamp="2023-10-31T10:03:28.000369" hostname="cnic"><testcase classname="bgp_dynamic_capability.test_bgp_dynamic_capability_addpath" name="test_bgp_dynamic_capability_addpath" time="35.146"><failure message="Failed: New core[s] found: /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r2/vtysh_core-sig_11-pid_413734.dmp, /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r1/vtysh_core-sig_11-pid_413566.dmp, /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r1/vtysh_core-sig_11-pid_413567.dmp, /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r2/vtysh_core-sig_11-pid_413733.dmp, /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r2/vtysh_core-sig_11-pid_413750.dmp, /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r1/vtysh_core-sig_11-pid_413583.dmp">item = &lt;Function test_bgp_dynamic_capability_addpath&gt;
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_runtest_call(item: pytest.Item) -&gt; None:
+        "Hook the function that is called to execute the test."
+    
+        # For topology only run the CLI then exit
+        if item.config.option.topology_only:
+            get_topogen().cli()
+            pytest.exit("exiting after --topology-only")
+    
+        # Let the default pytest_runtest_call execute the test function
+        yield
+    
+        check_for_backtraces()
+&gt;       check_for_core_dumps()
+
+../conftest.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def check_for_core_dumps():
+        tgen = get_topogen()  # pylint: disable=redefined-outer-name
+        if not tgen:
+            return
+    
+        if not hasattr(tgen, "existing_core_files"):
+            tgen.existing_core_files = set()
+        existing = tgen.existing_core_files
+    
+        cores = glob.glob(os.path.join(tgen.logdir, "*/*.dmp"))
+        latest = {x for x in cores if x not in existing}
+        if latest:
+            existing |= latest
+            tgen.existing_core_files = existing
+    
+            emsg = "New core[s] found: " + ", ".join(latest)
+            logger.error(emsg)
+&gt;           pytest.fail(emsg)
+E           Failed: New core[s] found: /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r2/vtysh_core-sig_11-pid_413734.dmp, /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r1/vtysh_core-sig_11-pid_413566.dmp, /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r1/vtysh_core-sig_11-pid_413567.dmp, /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r2/vtysh_core-sig_11-pid_413733.dmp, /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r2/vtysh_core-sig_11-pid_413750.dmp, /tmp/topotests/bgp_dynamic_capability.test_bgp_dynamic_capability_addpath/r1/vtysh_core-sig_11-pid_413583.dmp
+
+../conftest.py:323: Failed</failure><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase></testsuite></testsuites>
