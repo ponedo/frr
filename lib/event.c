@@ -1259,7 +1259,6 @@ done:
 		while (read(m->io_pipe[0], &trash, sizeof(trash)) > 0)
 			;
 		m->awakened = false;
-		num--;
 	}
 	pthread_mutex_unlock(&m->awakened_mtx);
 #else
