@@ -9,6 +9,7 @@
 
 #include <signal.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 
 #include "frrevent.h"
 #include "memory.h"
@@ -29,6 +30,9 @@ DEFINE_MTYPE_STATIC(LIB, THREAD, "Thread");
 DEFINE_MTYPE_STATIC(LIB, EVENT_MASTER, "Thread master");
 DEFINE_MTYPE_STATIC(LIB, EVENT_POLL, "Thread Poll Info");
 DEFINE_MTYPE_STATIC(LIB, EVENT_STATS, "Thread stats");
+#if EPOLL_ENABLED
+DEFINE_MTYPE_STATIC(LIB, EVENT_EPOLL, "Thread epoll events");
+#endif
 
 DECLARE_LIST(event_list, struct event, eventitem);
 
@@ -60,7 +64,7 @@ DECLARE_HEAP(event_timer_list, struct event, timeritem, event_timer_cmp);
 #define AWAKEN(m)                                                              \
 	do {                                                                   \
 		const unsigned char wakebyte = 0x01;                           \
-		write(m->io_pipe[1], &wakebyte, 1);                            \
+		write((m)->io_pipe[1], &wakebyte, 1);                            \
 	} while (0)
 
 /* control variable for initializer */
@@ -381,6 +385,68 @@ DEFPY (service_walltime_warning,
 	return CMD_SUCCESS;
 }
 
+#if EPOLL_ENABLED
+struct show_event_poll_helper_iter_arg_t
+{
+	struct vty *vty;
+	struct event_loop *master;
+};
+
+static void show_event_poll_helper_iter(struct hash_bucket *hb, void *arg)
+{
+	struct epoll_event *ev = hb->data;
+	struct show_event_poll_helper_iter_arg_t *iter_arg = arg;
+	struct vty *vty = iter_arg->vty;
+	struct event_loop *m = iter_arg->master;
+	struct event *thread;
+
+	vty_out(vty, "\t fd:%6d events:%2d\t\t",
+		ev->data.fd,
+		ev->events);
+
+	if (ev->events & EPOLLIN) {
+		thread = m->read[ev->data.fd];
+
+		if (!thread)
+			vty_out(vty, "ERROR ");
+		else
+			vty_out(vty, "%s ", thread->xref->funcname);
+	} else
+		vty_out(vty, " ");
+
+	if (ev->events & EPOLLOUT) {
+		thread = m->write[ev->data.fd];
+
+		if (!thread)
+			vty_out(vty, "ERROR\n");
+		else
+			vty_out(vty, "%s\n", thread->xref->funcname);
+	} else
+		vty_out(vty, "\n");
+}
+
+static void show_event_poll_helper(struct vty *vty, struct event_loop *m)
+{
+	const char *name = m->name ? m->name : "main";
+	char underline[strlen(name) + 1];
+	struct show_event_poll_helper_iter_arg_t iter_arg = {
+		.vty = vty,
+		.master = m
+	};
+	
+	memset(underline, '-', sizeof(underline));
+	underline[sizeof(underline) - 1] = '\0';
+
+	vty_out(vty, "\nShowing epoll FD's for %s\n", name);
+	vty_out(vty, "----------------------%s\n", underline);
+	vty_out(vty, "Count: %u/%d\n",
+		(uint32_t)(m->handler.regular_revent_count +
+			hashcount(m->handler.epoll_event_hash)),
+		m->fd_limit);
+	hash_iterate(m->handler.epoll_event_hash,
+		show_event_poll_helper_iter, &iter_arg);
+}
+#else
 static void show_event_poll_helper(struct vty *vty, struct event_loop *m)
 {
 	const char *name = m->name ? m->name : "main";
@@ -421,6 +487,7 @@ static void show_event_poll_helper(struct vty *vty, struct event_loop *m)
 			vty_out(vty, "\n");
 	}
 }
+#endif
 
 DEFUN_NOSH (show_event_poll,
             show_event_poll_cmd,
@@ -543,11 +610,61 @@ static void initializer(void)
 	pthread_key_create(&thread_current, NULL);
 }
 
+#if EPOLL_ENABLED
+static struct epoll_event *epoll_event_new(int fd,  uint32_t events)
+{
+	struct epoll_event *ev = XMALLOC(MTYPE_EVENT_EPOLL, sizeof(struct epoll_event));
+	ev->data.fd = fd;
+	ev->events = events;
+	return ev;
+}
+
+static void epoll_event_del(void *ev)
+{
+	XFREE(MTYPE_EVENT_EPOLL, ev);
+}
+
+static bool epoll_event_hash_cmp(const void *f, const void *s)
+{
+	const struct epoll_event *e1 = f;
+	const struct epoll_event *e2 = s;
+
+	return e1->data.fd == e2->data.fd;
+}
+
+static unsigned int epoll_event_hash_key(const void *arg)
+{
+	const struct epoll_event *e = arg;
+	return e->data.fd;
+}
+
+static void get_fd_stat(int fd, struct stat *fd_stat, bool *fd_closed)
+{
+	assert(fd_stat != NULL);
+	if (fstat(fd, fd_stat) == -1) {
+		/* fd is probably already closed */
+		if (errno == EBADF) {
+			if (fd_closed != NULL)
+				*fd_closed = true;
+			return;
+		}
+		zlog_debug("[!] In %s, fstat failed unexpectedly, fd: %d, errno: %d)",
+			   __func__, fd, errno);
+	}
+	if (fd_closed != NULL)
+		*fd_closed = false;
+}
+#endif
+
 #define STUPIDLY_LARGE_FD_SIZE 100000
+
 struct event_loop *event_master_create(const char *name)
 {
 	struct event_loop *rv;
 	struct rlimit limit;
+#if EPOLL_ENABLED
+	struct epoll_event pipe_read_ev;
+#endif
 
 	pthread_once(&init_once, &initializer);
 
@@ -609,6 +726,31 @@ struct event_loop *event_master_create(const char *name)
 	set_nonblocking(rv->io_pipe[0]);
 	set_nonblocking(rv->io_pipe[1]);
 
+#if EPOLL_ENABLED
+	/* Initailize data structures for epoll */
+	rv->handler.epoll_fd = epoll_create1(0);
+	rv->handler.epoll_event_hash = hash_create(
+		epoll_event_hash_key, epoll_event_hash_cmp,
+		"Epoll event hash");
+	rv->handler.eventsize = rv->fd_limit;
+	rv->handler.revents =
+		XCALLOC(MTYPE_EVENT_MASTER, sizeof(struct epoll_event) *
+						    rv->handler.eventsize);
+	rv->handler.regular_revents =
+		XCALLOC(MTYPE_EVENT_MASTER, sizeof(struct epoll_event) *
+						    rv->handler.eventsize);
+	rv->handler.regular_revent_count = 0;
+	pipe_read_ev.data.fd = rv->io_pipe[0];
+	pipe_read_ev.events = EPOLLIN;
+	if (-1 == epoll_ctl(rv->handler.epoll_fd, EPOLL_CTL_ADD, rv->io_pipe[0],
+			    &pipe_read_ev)) {
+		flog_err(
+			EC_LIB_NO_THREAD,
+			"Attempting to call epoll_ctl to add io_pipe[0] but failed, fd: %d!",
+			rv->io_pipe[0]);
+		exit(1);
+	}
+#else
 	/* Initialize data structures for poll() */
 	rv->handler.pfdsize = rv->fd_limit;
 	rv->handler.pfdcount = 0;
@@ -616,6 +758,7 @@ struct event_loop *event_master_create(const char *name)
 				   sizeof(struct pollfd) * rv->handler.pfdsize);
 	rv->handler.copy = XCALLOC(MTYPE_EVENT_MASTER,
 				   sizeof(struct pollfd) * rv->handler.pfdsize);
+#endif
 
 	/* add to list of threadmasters */
 	frr_with_mutex (&masters_mtx) {
@@ -733,8 +876,15 @@ void event_master_free(struct event_loop *m)
 	cpu_records_fini(m->cpu_records);
 
 	XFREE(MTYPE_EVENT_MASTER, m->name);
+#if EPOLL_ENABLED
+	close(m->handler.epoll_fd);
+	hash_clean_and_free(&(m->handler.epoll_event_hash), epoll_event_del);
+	XFREE(MTYPE_EVENT_MASTER, m->handler.revents);
+	XFREE(MTYPE_EVENT_MASTER, m->handler.regular_revents);
+#else
 	XFREE(MTYPE_EVENT_MASTER, m->handler.pfds);
 	XFREE(MTYPE_EVENT_MASTER, m->handler.copy);
+#endif
 	XFREE(MTYPE_EVENT_MASTER, m);
 }
 
@@ -861,7 +1011,11 @@ static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 {
 	sigset_t origsigs;
 	unsigned char trash[64];
+#if EPOLL_ENABLED
+	unsigned long count = hashcount(m->handler.epoll_event_hash);
+#else
 	nfds_t count = m->handler.copycount;
+#endif
 
 	/*
 	 * If timer_wait is null here, that means poll() should block
@@ -889,16 +1043,23 @@ static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 		/* effect a poll (return immediately) */
 		timeout = 0;
 	}
+#if EPOLL_ENABLED && defined(HAVE_EPOLL_PWAIT2) || \
+	!EPOLL_ENABLED && defined(HAVE_PPOLL)
+	struct timespec ts, *tsp;
+	msec_to_timespec(timeout, ts, tsp);
+#endif
 
 	zlog_tls_buffer_flush();
 	rcu_read_unlock();
 	rcu_assert_read_unlocked();
 
+#if !EPOLL_ENABLED
 	/* add poll pipe poker */
 	assert(count + 1 < m->handler.pfdsize);
 	m->handler.copy[count].fd = m->io_pipe[0];
 	m->handler.copy[count].events = POLLIN;
 	m->handler.copy[count].revents = 0x00;
+#endif
 
 	/* We need to deal with a signal-handling race here: we
 	 * don't want to miss a crucial signal, such as SIGTERM or SIGINT,
@@ -922,17 +1083,20 @@ static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 		/* Don't make any changes for the non-main pthreads */
 		pthread_sigmask(SIG_SETMASK, NULL, &origsigs);
 	}
-
-#if defined(HAVE_PPOLL)
-	struct timespec ts, *tsp;
-
-	if (timeout >= 0) {
-		ts.tv_sec = timeout / 1000;
-		ts.tv_nsec = (timeout % 1000) * 1000000;
-		tsp = &ts;
-	} else
-		tsp = NULL;
-
+#if defined(USE_EPOLL) && defined(HAVE_EPOLL_PWAIT2)
+	num = epoll_pwait2(m->handler.epoll_fd, m->handler.revents,
+			   count, tsp, &origsigs);
+	pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
+#elif defined(USE_EPOLL) && defined(HAVE_EPOLL_PWAIT)
+	num = epoll_pwait(m->handler.epoll_fd, m->handler.revents,
+			  count, timeout, &origsigs);
+	pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
+#elif defined(USE_EPOLL) && defined(HAVE_EPOLL_WAIT)
+	/* Not ideal - there is a race after we restore the signal mask */
+	pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
+	num = epoll_wait(m->handler.epoll_fd, m->handler.revents,
+			  count, timeout);
+#elif defined(HAVE_PPOLL)
 	num = ppoll(m->handler.copy, count + 1, tsp, &origsigs);
 	pthread_sigmask(SIG_SETMASK, &origsigs, NULL);
 #else
@@ -945,10 +1109,36 @@ done:
 
 	if (num < 0 && errno == EINTR)
 		*eintr_p = true;
+	
+	/* Drain the pipe */
+	while (read(m->io_pipe[0], &trash, sizeof(trash)) > 0)
+		;
 
-	if (num > 0 && m->handler.copy[count].revents != 0 && num--)
-		while (read(m->io_pipe[0], &trash, sizeof(trash)) > 0)
-			;
+	/* When poll() is used, we need to remove the io_pipe[0]
+	 * from m->handler.copy and decreate "num" as fast as
+	 * possible. Otherwise, when current thread is awakened,
+	 * even if there is no ready I/O task, thread_process_io
+	 * will still iterate over m->handler.copy until io_pipe[0]
+	 * is find, which is inefficient.
+	 *
+	 * When epoll-APIs are used, we can postpone handling of
+	 * io_pipe[0] in thread_process_io. In the case mentioned
+	 * above, thread_process_io just need to iterate over a 
+	 * single-element m->handler.revents, which is much faster
+	 * than poll() case (thanks to epoll_wait's behavior). Of
+	 * course, removing io_pipe[0] from m->handler.revents is
+	 * still a feasible choice. However, it is not as easy as
+	 * removing the last element of m->handler.copy before, since
+	 * we don't know where io_pipe[0] is located in m->handler.revents
+	 * now. Only by traversing through m->handler.revents can we
+	 * find io_pipe[0] and remove it. So, why don't we just postpone
+	 * this traverse to thread_process_io to avoid an additional
+	 * traverse?
+	 */
+#if !EPOLL_ENABLED
+	if (num > 0 && m->handler.copy[count].revents != 0)
+		num--;
+#endif
 
 	rcu_read_lock();
 
@@ -982,13 +1172,65 @@ void _event_add_read_write(const struct xref_eventsched *xref,
 		if (t_ptr && *t_ptr)
 			break;
 
+#if EPOLL_ENABLED
+		/* placeholder struct epoll_event for fast hash lookup */
+		struct epoll_event set_ev = {0};
+		struct epoll_event *hash_ev;
+		struct stat fd_stat;
+		bool fd_closed;
+		int i;
+
+		set_ev.data.fd = fd;
+		set_ev.events = (dir == EVENT_READ ? EPOLLIN : EPOLLOUT);
+
+		get_fd_stat(fd, &fd_stat, &fd_closed);
+
+		if ((hash_ev = hash_lookup(m->handler.epoll_event_hash, &set_ev))) {
+			/* Existing fd */
+			set_ev.events |= hash_ev->events;
+			if (S_ISREG(fd_stat.st_mode)) {
+				/* Regular file, modify the entry in m->handler.regular_events */
+				for (i = 0; i < m->handler.regular_revent_count; i++) {
+					if (m->handler.regular_revents[i].data.fd == fd)
+						break;
+				}
+				if (i < m->handler.regular_revent_count) {
+					m->handler.regular_revents[i].events = set_ev.events;
+				} else {
+					zlog_debug("%s: A regular file I/O event registered in epoll_event_hash, but not in regular_event",
+						__func__);
+					zlog_debug("[!] threadmaster: %s | fd: %d",
+						m->name ? m->name : "", fd);
+				}
+			} else if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_MOD, fd, &set_ev)) {
+				/* Not regular file, add into m->handler.regular_events */
+				zlog_debug("%s: EPOLL_CTL_MOD error", __func__);
+				zlog_debug("[!] threadmaster: %s | fd: %d",
+					m->name ? m->name : "", fd);
+			}
+			/* Modify existing hash element */
+			hash_ev->events = set_ev.events;
+		} else {
+			/* New fd */
+			if (S_ISREG(fd_stat.st_mode)) {
+				/* Regular file, add into m->handler.regular_events */
+				assert(m->handler.regular_revent_count < m->handler.eventsize);
+				m->handler.regular_revents[m->handler.regular_revent_count].data.fd = fd;
+				m->handler.regular_revents[m->handler.regular_revent_count].events = set_ev.events;
+				m->handler.regular_revent_count++;
+			} else if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_ADD, fd, &set_ev)) {
+				/* Not regular file, add into the epoll set */
+				zlog_debug("%s: EPOLL_CTL_ADD error", __func__);
+				zlog_debug("[!] threadmaster: %s | fd: %d",
+					m->name ? m->name : "", fd);
+			}
+			/* Add hash element */
+			hash_ev = epoll_event_new(fd, set_ev.events);
+			(void)hash_get(m->handler.epoll_event_hash, hash_ev, hash_alloc_intern);
+		}
+#else
 		/* default to a new pollfd */
 		nfds_t queuepos = m->handler.pfdcount;
-
-		if (dir == EVENT_READ)
-			thread_array = m->read;
-		else
-			thread_array = m->write;
 
 		/*
 		 * if we already have a pollfd for our file descriptor, find and
@@ -997,22 +1239,11 @@ void _event_add_read_write(const struct xref_eventsched *xref,
 		for (nfds_t i = 0; i < m->handler.pfdcount; i++)
 			if (m->handler.pfds[i].fd == fd) {
 				queuepos = i;
-
-#ifdef DEV_BUILD
-				/*
-				 * What happens if we have a thread already
-				 * created for this event?
-				 */
-				if (thread_array[fd])
-					assert(!"Thread already scheduled for file descriptor");
-#endif
 				break;
 			}
 
 		/* make sure we have room for this fd + pipe poker fd */
 		assert(queuepos + 1 < m->handler.pfdsize);
-
-		thread = thread_get(m, dir, func, arg, xref);
 
 		m->handler.pfds[queuepos].fd = fd;
 		m->handler.pfds[queuepos].events |=
@@ -1020,6 +1251,23 @@ void _event_add_read_write(const struct xref_eventsched *xref,
 
 		if (queuepos == m->handler.pfdcount)
 			m->handler.pfdcount++;
+#endif
+
+		if (dir == EVENT_READ)
+			thread_array = m->read;
+		else
+			thread_array = m->write;
+			
+#ifdef DEV_BUILD
+		/*
+		 * What happens if we have a thread already
+		 * created for this event?
+		 */
+		if (thread_array[fd])
+			assert(!"Thread already scheduled for file descriptor");
+#endif
+
+		thread = thread_get(m, dir, func, arg, xref);
 
 		if (thread) {
 			frr_with_mutex (&thread->mtx) {
@@ -1174,9 +1422,95 @@ void _event_add_event(const struct xref_eventsched *xref, struct event_loop *m,
  * @param fd
  * @param state the event to cancel. One or more (OR'd together) of the
  * following:
- *   - POLLIN
- *   - POLLOUT
+ *   - POLLIN/EPOLLIN
+ *   - POLLOUT/EPOLLOUT
  */
+#if EPOLL_ENABLED
+static void event_cancel_rw(struct event_loop *master, int fd, short state,
+			    int idx_hint)
+{
+	struct epoll_event set_ev;
+	struct epoll_event *hash_ev;
+	struct stat fd_stat;
+	bool fd_closed;
+	int i;
+
+	get_fd_stat(fd, &fd_stat, &fd_closed);
+
+	set_ev.data.fd = fd;
+	hash_ev = hash_lookup(master->handler.epoll_event_hash, &set_ev);
+	if (!hash_ev) {
+		zlog_debug(
+			"[!] Received cancellation request for nonexistent rw job");
+		zlog_debug("[!] threadmaster: %s | fd: %d",
+			   master->name ? master->name : "", fd);
+		return;
+	}
+
+	/* NOT out event. */
+	set_ev.events = hash_ev->events &= ~(state);
+	
+	if (set_ev.events == 0) {
+		/* All events are canceled, unregister the fd */
+		if (S_ISREG(fd_stat.st_mode)) {
+			/* Regular file, remove the fd from m->handler.regular_events */
+			for (i = 0; i < master->handler.regular_revent_count; i++) {
+				if (master->handler.regular_revents[i].data.fd == fd)
+					break;
+			}
+			if (!(i < master->handler.regular_revent_count)) {
+				zlog_debug("%s: A regular file I/O event registered in epoll_event_hash, but not in regular_event",
+					__func__);
+				zlog_debug("[!] threadmaster: %s | fd: %d",
+					master->name ? master->name : "", fd);
+				return;
+			}
+			memmove(master->handler.regular_revents + i,
+				master->handler.regular_revents + i + 1,
+				(master->handler.regular_revent_count - i - 1)
+					* sizeof(struct epoll_event));
+			master->handler.regular_revent_count--;
+			master->handler.regular_revents[master->handler.regular_revent_count].data.fd = 0;
+			master->handler.regular_revents[master->handler.regular_revent_count].events = 0;
+		} else if (-1 == epoll_ctl(master->handler.epoll_fd, EPOLL_CTL_DEL, fd, NULL)) {
+			/* Not regular file, remove the fd from the epoll set */
+			zlog_debug("%s: EPOLL_CTL_DEL error", __func__);
+			zlog_debug("[!] threadmaster: %s | fd: %d",
+				master->name ? master->name : "", fd);
+		}
+		/* Remove fd from hash table */
+		hash_release(master->handler.epoll_event_hash, hash_ev);
+
+	} else {
+		/* Not all events are canceled */
+		if (S_ISREG(fd_stat.st_mode)) {
+			/* Regular file, update the fd's events in
+			 * m->handler.regular_events */
+			for (i = 0; i < master->handler.regular_revent_count; i++) {
+				if (master->handler.regular_revents[i].data.fd == fd)
+					break;
+			}
+			if (i < master->handler.regular_revent_count) {
+				master->handler.regular_revents[i].events = set_ev.events;
+			} else {
+				zlog_debug("%s: A regular file I/O event registered in epoll_event_hash, but not in regular_event",
+					__func__);
+				zlog_debug("[!] threadmaster: %s | fd: %d",
+					master->name ? master->name : "", fd);
+				return;
+			}
+		} else if (-1 == epoll_ctl(master->handler.epoll_fd, EPOLL_CTL_MOD, fd, &set_ev)) {
+			/* Not regular file, update the fd's events
+			 * from the epoll set */
+			zlog_debug("%s: EPOLL_CTL_MOD error", __func__);
+			zlog_debug("[!] threadmaster: %s | fd: %d",
+				master->name ? master->name : "", fd);
+		}
+		/* update the fd's events in the hash table. */
+		hash_ev->events = set_ev.events;
+	}
+}
+#else
 static void event_cancel_rw(struct event_loop *master, int fd, short state,
 			    int idx_hint)
 {
@@ -1240,6 +1574,45 @@ static void event_cancel_rw(struct event_loop *master, int fd, short state,
 		master->handler.copy[master->handler.copycount].events = 0;
 	}
 }
+#endif
+
+#if EPOLL_ENABLED
+struct cr_rw_iter_arg_t {
+	struct event_loop *master;
+	struct cancel_req *cr;
+};
+
+static void cr_rw_iter(struct hash_bucket *hb, void *arg)
+{
+	struct epoll_event *ev = hb->data;
+	struct cr_rw_iter_arg_t *cr_iter_arg = arg;
+	struct event_loop *master = cr_iter_arg->master;
+	struct cancel_req *cr = cr;
+	struct event *t;
+	int fd;
+
+	fd = ev->data.fd;
+	if (ev->events & EPOLLIN)
+		t = master->read[fd];
+	else
+		t = master->write[fd];
+
+	if (t && t->arg == cr->eventobj) {
+		/* Found a match to cancel: clean up fd arrays */
+		event_cancel_rw(master, fd, ev->events, -1);
+
+		/* Clean up thread arrays */
+		master->read[fd] = NULL;
+		master->write[fd] = NULL;
+
+		/* Clear caller's ref */
+		if (t->ref)
+			*t->ref = NULL;
+
+		thread_add_unuse(master, t);
+	}
+}
+#endif
 
 /*
  * Process task cancellation given a task argument: iterate through the
@@ -1249,9 +1622,16 @@ static void cancel_arg_helper(struct event_loop *master,
 			      const struct cancel_req *cr)
 {
 	struct event *t;
+#if EPOLL_ENABLED
+	struct cr_rw_iter_arg_t cr_rw_iter_arg = {
+		.master = master,
+		.cr = cr
+	};
+#else
 	nfds_t i;
 	int fd;
 	struct pollfd *pfd;
+#endif
 
 	/* We're only processing arg-based cancellations here. */
 	if (cr->eventobj == NULL)
@@ -1281,6 +1661,10 @@ static void cancel_arg_helper(struct event_loop *master,
 		return;
 
 	/* Check the io tasks */
+#if EPOLL_ENABLED
+	hash_iterate(master->handler.epoll_event_hash,
+		cr_rw_iter, &cr_rw_iter_arg);
+#else
 	for (i = 0; i < master->handler.pfdcount;) {
 		pfd = master->handler.pfds + i;
 
@@ -1311,6 +1695,7 @@ static void cancel_arg_helper(struct event_loop *master,
 		} else
 			i++;
 	}
+#endif
 
 	/* Check the timer tasks */
 	t = event_timer_list_first(&master->timer);
@@ -1374,11 +1759,19 @@ static void do_event_cancel(struct event_loop *master)
 		/* Determine the appropriate queue to cancel the thread from */
 		switch (thread->type) {
 		case EVENT_READ:
+#if EPOLL_ENABLED
+			event_cancel_rw(master, thread->u.fd, EPOLLIN, -1);
+#else
 			event_cancel_rw(master, thread->u.fd, POLLIN, -1);
+#endif
 			thread_array = master->read;
 			break;
 		case EVENT_WRITE:
+#if EPOLL_ENABLED
+			event_cancel_rw(master, thread->u.fd, EPOLLOUT, -1);
+#else
 			event_cancel_rw(master, thread->u.fd, POLLOUT, -1);
+#endif
 			thread_array = master->write;
 			break;
 		case EVENT_TIMER:
@@ -1588,6 +1981,134 @@ static struct event *thread_run(struct event_loop *m, struct event *thread,
 	return fetch;
 }
 
+#if EPOLL_ENABLED
+static int thread_process_io_helper(struct event_loop *m, struct event *thread,
+				    short state, short actual_state, int i, int fd,
+					struct stat *fd_stat, struct epoll_event *hash_ev)
+{
+	struct event **thread_array;
+	struct epoll_event set_ev;
+
+	/*
+	 * Clear the events corresponding to "state" in
+	 * regular_revents/epoll set, and hash table.
+	 *
+	 * This cleans up a possible infinite loop where we refuse
+	 * to respond to a poll event but poll is insistent that
+	 * we should.
+	 */
+	set_ev.data.fd = fd;
+	set_ev.events = hash_ev->events & ~(state);
+
+	if (S_ISREG(fd_stat->st_mode)) {
+		/* Regular file, update the fd's events in
+		 * m->handler.regular_events */
+		m->handler.regular_revents[i].events = set_ev.events;
+	} else if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_MOD, fd, &set_ev)) {
+		/* Not regular file, update the fd's events
+		 * from the epoll set */
+		zlog_debug("%s: EPOLL_CTL_MOD error", __func__);
+		zlog_debug("[!] threadmaster: %s | fd: %d",
+			m->name ? m->name : "", fd);
+	}
+	/* update the fd's events in the hash table. */
+	hash_ev->events = set_ev.events;
+
+	if (!thread) {
+		if ((actual_state & (EPOLLHUP|EPOLLIN)) != EPOLLHUP)
+			flog_err(EC_LIB_NO_THREAD,
+				 "Attempting to process an I/O event but for fd: %d(%d) no thread to handle this!",
+				 fd, actual_state);
+		return 0;
+	}
+
+	if (thread->type == EVENT_READ)
+		thread_array = m->read;
+	else
+		thread_array = m->write;
+
+	thread_array[thread->u.fd] = NULL;
+	event_list_add_tail(&m->ready, thread);
+	thread->type = EVENT_READY;
+
+	return 1;
+}
+
+static inline void thread_process_io_inner_loop(struct event_loop *m,
+						struct epoll_event *revents, int *i)
+{
+	struct epoll_event *hash_ev;
+	struct epoll_event set_ev;
+	int fd;
+	struct stat fd_stat;
+	bool fd_closed;
+
+	fd = revents[*i].data.fd;
+	if (fd == m->io_pipe[0] || fd == m->io_pipe[1])
+		return;
+
+	get_fd_stat(fd, &fd_stat, &fd_closed);
+	
+	set_ev.data.fd = fd;
+	hash_ev = hash_lookup(m->handler.epoll_event_hash, &set_ev);
+	assert(hash_ev);
+
+	/* Process the I/O event */
+	if (revents[*i].events & (EPOLLIN | EPOLLHUP | EPOLLERR)) {
+		thread_process_io_helper(m, m->read[fd], EPOLLIN,
+					 revents[*i].events, *i, fd, &fd_stat, hash_ev);
+	}
+	if (revents[*i].events & (EPOLLOUT)) {
+		thread_process_io_helper(m, m->write[fd], EPOLLOUT,
+					 revents[*i].events, *i, fd, &fd_stat, hash_ev);
+	}
+
+	/*
+	 * if one of our file descriptors is garbage, remove the fd
+	 * from regular_revents/epoll set, and hash table.
+	 */
+	if (fd_closed) {
+		/* All events are canceled, unregister the fd */
+		if (S_ISREG(fd_stat.st_mode)) {
+			/* Regular file, remove the fd from m->handler.regular_events */
+			memmove(m->handler.regular_revents + *i, m->handler.regular_revents + *i + 1,
+				(m->handler.regular_revent_count - *i - 1) * sizeof(struct epoll_event));
+			m->handler.regular_revent_count--;
+			m->handler.regular_revents[m->handler.regular_revent_count].data.fd = 0;
+			m->handler.regular_revents[m->handler.regular_revent_count].events = 0;
+			/* regular_revents is modified when iterating on it, rollback */
+			*i = *i - 1;
+		} else if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_DEL, fd, NULL)) {
+			/* Not regular file, remove the fd from the epoll set */
+			zlog_debug("%s: EPOLL_CTL_DEL error", __func__);
+			zlog_debug("[!] threadmaster: %s | fd: %d",
+				m->name ? m->name : "", fd);
+		}
+		/* Remove fd from hash table */
+		hash_release(m->handler.epoll_event_hash, hash_ev);
+	}
+}
+
+/**
+ * Process I/O events.
+ *
+ * @param m the thread master
+ * @param num return value of epoll_wait()
+ */
+static void thread_process_io(struct event_loop *m, int num)
+{
+	int i;
+
+	/* First, handle regular file I/O events in m->handler.regular_revents. */
+	for (i = 0; i < m->handler.regular_revent_count; ++i)
+		thread_process_io_inner_loop(m, m->handler.regular_revents, &i);
+	
+	/* Second, handle I/O events in m->handler.revents which are returned by
+	 * epoll_wait(). */
+	for (i = 0; i < num; ++i)
+		thread_process_io_inner_loop(m, m->handler.revents, &i);
+}
+#else
 static int thread_process_io_helper(struct event_loop *m, struct event *thread,
 				    short state, short actual_state, int pos)
 {
@@ -1707,6 +2228,7 @@ static void thread_process_io(struct event_loop *m, unsigned int num)
 
 	m->last_read++;
 }
+#endif
 
 /* Add all timers that have popped to the ready list. */
 static unsigned int thread_process_timers(struct event_loop *m,
@@ -1833,12 +2355,22 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 		    (tw && !timercmp(tw, &zerotime, >)))
 			tw = &zerotime;
 
+#if EPOLL_ENABLED
+		if (!tw && m->handler.regular_revent_count == 0
+			&& hashcount(m->handler.epoll_event_hash)) { /* die */
+			pthread_mutex_unlock(&m->mtx);
+			fetch = NULL;
+			break;
+		}
+#else
 		if (!tw && m->handler.pfdcount == 0) { /* die */
 			pthread_mutex_unlock(&m->mtx);
 			fetch = NULL;
 			break;
 		}
+#endif
 
+#if !EPOLL_ENABLED
 		/*
 		 * Copy pollfd array + # active pollfds in it. Not necessary to
 		 * copy the array size as this is fixed.
@@ -1846,6 +2378,7 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 		m->handler.copycount = m->handler.pfdcount;
 		memcpy(m->handler.copy, m->handler.pfds,
 		       m->handler.copycount * sizeof(struct pollfd));
+#endif
 
 		pthread_mutex_unlock(&m->mtx);
 		{
@@ -1854,7 +2387,7 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 		}
 		pthread_mutex_lock(&m->mtx);
 
-		/* Handle any errors received in poll() */
+		/* Handle any errors received in poll()/epoll_wait() */
 		if (num < 0) {
 			if (eintr_p) {
 				pthread_mutex_unlock(&m->mtx);
@@ -1863,8 +2396,13 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 			}
 
 			/* else die */
+#if EPOLL_ENABLED
+			flog_err(EC_LIB_SYSTEM_CALL, "epoll_wait() error: %s",
+				 safe_strerror(errno));
+#else
 			flog_err(EC_LIB_SYSTEM_CALL, "poll() error: %s",
 				 safe_strerror(errno));
+#endif
 			pthread_mutex_unlock(&m->mtx);
 			fetch = NULL;
 			break;
