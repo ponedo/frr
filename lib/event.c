@@ -1036,6 +1036,10 @@ static int fd_poll(struct event_loop *m, const struct timeval *timer_wait,
 		/* use the default value */
 		timeout = (timer_wait->tv_sec * 1000)
 			  + (timer_wait->tv_usec / 1000);
+#if EPOLL_ENABLED
+	} else if (m->handler.regular_revent_count > 0) {
+		timeout = 0;
+#endif
 	} else if (m->selectpoll_timeout > 0) {
 		/* use the user's timeout */
 		timeout = m->selectpoll_timeout;
@@ -1203,10 +1207,21 @@ void _event_add_read_write(const struct xref_eventsched *xref,
 						m->name ? m->name : "", fd);
 				}
 			} else if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_MOD, fd, &set_ev)) {
-				/* Not regular file, add into m->handler.regular_events */
-				zlog_debug("%s: EPOLL_CTL_MOD error", __func__);
-				zlog_debug("[!] threadmaster: %s | fd: %d",
-					m->name ? m->name : "", fd);
+				/* Not regular file, modify the entry in the epoll set */
+				if (errno == 2) {
+					/* The fd is already closed and removed from epoll set,
+					 * but still in the hash table (fd is a zombie) */
+					if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_ADD, fd, &set_ev)) {
+						/* Not regular file, add into the epoll set */
+						zlog_debug("%s: EPOLL_CTL_MOD and EPOLL_CTL_ADD error, errno: %d", __func__, errno);
+						zlog_debug("[!] threadmaster: %s | fd: %d",
+							m->name ? m->name : "", fd);
+					}
+				} else {
+					zlog_debug("%s: EPOLL_CTL_MOD error, errno: %d", __func__, errno);
+					zlog_debug("[!] threadmaster: %s | fd: %d",
+						m->name ? m->name : "", fd);
+				}
 			}
 			/* Modify existing hash element */
 			hash_ev->events = set_ev.events;
@@ -1220,9 +1235,20 @@ void _event_add_read_write(const struct xref_eventsched *xref,
 				m->handler.regular_revent_count++;
 			} else if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_ADD, fd, &set_ev)) {
 				/* Not regular file, add into the epoll set */
-				zlog_debug("%s: EPOLL_CTL_ADD error", __func__);
-				zlog_debug("[!] threadmaster: %s | fd: %d",
-					m->name ? m->name : "", fd);
+				if (errno == 2) {
+					/* The fd is already closed and removed from epoll set,
+					 * but still in the hash table (fd is a zombie) */
+					if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_MOD, fd, &set_ev)) {
+						/* Not regular file, add into the epoll set */
+						zlog_debug("%s: EPOLL_CTL_ADD and EPOLL_CTL_MOD error, errno: %d", __func__, errno);
+						zlog_debug("[!] threadmaster: %s | fd: %d",
+							m->name ? m->name : "", fd);
+					}
+				} else {
+					zlog_debug("%s: EPOLL_CTL_ADD error, errno: %d", __func__, errno);
+					zlog_debug("[!] threadmaster: %s | fd: %d",
+						m->name ? m->name : "", fd);
+				}
 			}
 			/* Add hash element */
 			hash_ev = epoll_event_new(fd, set_ev.events);
@@ -1474,7 +1500,7 @@ static void event_cancel_rw(struct event_loop *master, int fd, short state,
 			master->handler.regular_revents[master->handler.regular_revent_count].events = 0;
 		} else if (-1 == epoll_ctl(master->handler.epoll_fd, EPOLL_CTL_DEL, fd, NULL)) {
 			/* Not regular file, remove the fd from the epoll set */
-			zlog_debug("%s: EPOLL_CTL_DEL error", __func__);
+			zlog_debug("%s: EPOLL_CTL_DEL error, errno: %d", __func__, errno);
 			zlog_debug("[!] threadmaster: %s | fd: %d",
 				master->name ? master->name : "", fd);
 		}
@@ -1502,7 +1528,7 @@ static void event_cancel_rw(struct event_loop *master, int fd, short state,
 		} else if (-1 == epoll_ctl(master->handler.epoll_fd, EPOLL_CTL_MOD, fd, &set_ev)) {
 			/* Not regular file, update the fd's events
 			 * from the epoll set */
-			zlog_debug("%s: EPOLL_CTL_MOD error", __func__);
+			zlog_debug("%s: EPOLL_CTL_MOD error, errno: %d", __func__, errno);
 			zlog_debug("[!] threadmaster: %s | fd: %d",
 				master->name ? master->name : "", fd);
 		}
@@ -2007,7 +2033,7 @@ static int thread_process_io_helper(struct event_loop *m, struct event *thread,
 	} else if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_MOD, fd, &set_ev)) {
 		/* Not regular file, update the fd's events
 		 * from the epoll set */
-		zlog_debug("%s: EPOLL_CTL_MOD error", __func__);
+		zlog_debug("%s: EPOLL_CTL_MOD error, errno: %d", __func__, errno);
 		zlog_debug("[!] threadmaster: %s | fd: %d",
 			m->name ? m->name : "", fd);
 	}
@@ -2067,8 +2093,10 @@ static inline void thread_process_io_inner_loop(struct event_loop *m,
 	 * if one of our file descriptors is garbage, remove the fd
 	 * from regular_revents/epoll set, and hash table.
 	 */
-	if (fd_closed) {
-		/* All events are canceled, unregister the fd */
+	if (fd_closed || (revents[*i].events & (EPOLLHUP | EPOLLERR))) {
+		// zlog_debug("closed fd or HUP/ERR detected..., fd: %d, fd_closed: %d",
+		// 	fd, fd_closed);
+		// zlog_tls_buffer_flush();
 		if (S_ISREG(fd_stat.st_mode)) {
 			/* Regular file, remove the fd from m->handler.regular_events */
 			memmove(m->handler.regular_revents + *i, m->handler.regular_revents + *i + 1,
@@ -2080,7 +2108,7 @@ static inline void thread_process_io_inner_loop(struct event_loop *m,
 			*i = *i - 1;
 		} else if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_DEL, fd, NULL)) {
 			/* Not regular file, remove the fd from the epoll set */
-			zlog_debug("%s: EPOLL_CTL_DEL error", __func__);
+			zlog_debug("%s: EPOLL_CTL_DEL error, errno: %d", __func__, errno);
 			zlog_debug("[!] threadmaster: %s | fd: %d",
 				m->name ? m->name : "", fd);
 		}
@@ -2286,6 +2314,12 @@ static unsigned int thread_process(struct event_list_head *list)
 	return ready;
 }
 
+#if EPOLL_ENABLED
+// static void debug_iter(struct hash_bucket *hb, void *arg) {
+// 	struct epoll_event *ev = hb->data;
+// 	zlog_debug("debug_iter: fd: %d, events: %u", ev->data.fd, ev->events);
+// }
+#endif
 
 /* Fetch next ready thread. */
 struct event *event_fetch(struct event_loop *m, struct event *fetch)
@@ -2357,7 +2391,7 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 
 #if EPOLL_ENABLED
 		if (!tw && m->handler.regular_revent_count == 0
-			&& hashcount(m->handler.epoll_event_hash)) { /* die */
+			&& hashcount(m->handler.epoll_event_hash) == 0) { /* die */
 			pthread_mutex_unlock(&m->mtx);
 			fetch = NULL;
 			break;
@@ -2380,6 +2414,10 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 		       m->handler.copycount * sizeof(struct pollfd));
 #endif
 
+// #if EPOLL_ENABLED
+// 		hash_iterate(m->handler.epoll_event_hash, debug_iter, NULL);
+// 		zlog_tls_buffer_flush();
+// #endif
 		pthread_mutex_unlock(&m->mtx);
 		{
 			eintr_p = false;
