@@ -1484,12 +1484,11 @@ static void event_cancel_rw(struct event_loop *master, int fd, short state,
 				if (master->handler.regular_revents[i].data.fd == fd)
 					break;
 			}
-			if (!(i < master->handler.regular_revent_count)) {
+			if (i >= master->handler.regular_revent_count) {
 				zlog_debug("%s: A regular file I/O event registered in epoll_event_hash, but not in regular_event",
 					__func__);
 				zlog_debug("[!] threadmaster: %s | fd: %d",
 					master->name ? master->name : "", fd);
-				return;
 			}
 			memmove(master->handler.regular_revents + i,
 				master->handler.regular_revents + i + 1,
@@ -1523,7 +1522,6 @@ static void event_cancel_rw(struct event_loop *master, int fd, short state,
 					__func__);
 				zlog_debug("[!] threadmaster: %s | fd: %d",
 					master->name ? master->name : "", fd);
-				return;
 			}
 		} else if (-1 == epoll_ctl(master->handler.epoll_fd, EPOLL_CTL_MOD, fd, &set_ev)) {
 			/* Not regular file, update the fd's events
@@ -1613,11 +1611,14 @@ static void cr_rw_iter(struct hash_bucket *hb, void *arg)
 	struct epoll_event *ev = hb->data;
 	struct cr_rw_iter_arg_t *cr_iter_arg = arg;
 	struct event_loop *master = cr_iter_arg->master;
-	struct cancel_req *cr = cr;
+	struct cancel_req *cr = cr_iter_arg->cr;
 	struct event *t;
 	int fd;
 
 	fd = ev->data.fd;
+	if (fd == master->io_pipe[0] || fd == master->io_pipe[1])
+		return;
+
 	if (ev->events & EPOLLIN)
 		t = master->read[fd];
 	else
