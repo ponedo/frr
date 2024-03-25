@@ -1211,6 +1211,7 @@ void _event_add_read_write(const struct xref_eventsched *xref,
 				if (errno == 2) {
 					/* The fd is already closed and removed from epoll set,
 					 * but still in the hash table (fd is a zombie) */
+					set_ev.events = (dir == EVENT_READ ? EPOLLIN : EPOLLOUT); // reset .events of new set_ev
 					if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_ADD, fd, &set_ev)) {
 						/* Not regular file, add into the epoll set */
 						zlog_debug("%s: EPOLL_CTL_MOD and EPOLL_CTL_ADD error, errno: %d", __func__, errno);
@@ -1236,15 +1237,6 @@ void _event_add_read_write(const struct xref_eventsched *xref,
 			} else if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_ADD, fd, &set_ev)) {
 				/* Not regular file, add into the epoll set */
 				if (errno == 2) {
-					/* The fd is already closed and removed from epoll set,
-					 * but still in the hash table (fd is a zombie) */
-					if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_MOD, fd, &set_ev)) {
-						/* Not regular file, add into the epoll set */
-						zlog_debug("%s: EPOLL_CTL_ADD and EPOLL_CTL_MOD error, errno: %d", __func__, errno);
-						zlog_debug("[!] threadmaster: %s | fd: %d",
-							m->name ? m->name : "", fd);
-					}
-				} else {
 					zlog_debug("%s: EPOLL_CTL_ADD error, errno: %d", __func__, errno);
 					zlog_debug("[!] threadmaster: %s | fd: %d",
 						m->name ? m->name : "", fd);
