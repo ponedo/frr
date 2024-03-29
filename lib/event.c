@@ -740,6 +740,7 @@ struct event_loop *event_master_create(const char *name)
 		XCALLOC(MTYPE_EVENT_MASTER, sizeof(struct epoll_event) *
 						    rv->handler.eventsize);
 	rv->handler.regular_revent_count = 0;
+    memset(&pipe_read_ev, 0, sizeof(pipe_read_ev));
 	pipe_read_ev.data.fd = rv->io_pipe[0];
 	pipe_read_ev.events = EPOLLIN;
 	if (-1 == epoll_ctl(rv->handler.epoll_fd, EPOLL_CTL_ADD, rv->io_pipe[0],
@@ -1178,12 +1179,13 @@ void _event_add_read_write(const struct xref_eventsched *xref,
 
 #if EPOLL_ENABLED
 		/* placeholder struct epoll_event for fast hash lookup */
-		struct epoll_event set_ev = {0};
+		struct epoll_event set_ev;
 		struct epoll_event *hash_ev;
 		struct stat fd_stat;
 		bool fd_closed;
 		int i;
 
+		memset(&set_ev, 0, sizeof(set_ev));
 		set_ev.data.fd = fd;
 		set_ev.events = (dir == EVENT_READ ? EPOLLIN : EPOLLOUT);
 
@@ -1455,6 +1457,7 @@ static void event_cancel_rw(struct event_loop *master, int fd, short state,
 
 	get_fd_stat(fd, &fd_stat, &fd_closed);
 
+	memset(&set_ev, 0, sizeof(set_ev));
 	set_ev.data.fd = fd;
 	hash_ev = hash_lookup(master->handler.epoll_event_hash, &set_ev);
 	if (!hash_ev) {
@@ -2016,6 +2019,7 @@ static int thread_process_io_helper(struct event_loop *m, struct event *thread,
 	 * to respond to a poll event but poll is insistent that
 	 * we should.
 	 */
+	memset(&set_ev, 0, sizeof(set_ev));
 	set_ev.data.fd = fd;
 	set_ev.events = hash_ev->events & ~(state);
 
@@ -2068,6 +2072,7 @@ static inline void thread_process_io_inner_loop(struct event_loop *m,
 
 	get_fd_stat(fd, &fd_stat, &fd_closed);
 	
+	memset(&set_ev, 0, sizeof(set_ev));
 	set_ev.data.fd = fd;
 	hash_ev = hash_lookup(m->handler.epoll_event_hash, &set_ev);
 	assert(hash_ev);
