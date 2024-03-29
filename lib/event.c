@@ -2087,9 +2087,6 @@ static inline void thread_process_io_inner_loop(struct event_loop *m,
 	 * from regular_revents/epoll set, and hash table.
 	 */
 	if (fd_closed || (revents[*i].events & (EPOLLHUP | EPOLLERR))) {
-		// zlog_debug("closed fd or HUP/ERR detected..., fd: %d, fd_closed: %d",
-		// 	fd, fd_closed);
-		// zlog_tls_buffer_flush();
 		if (S_ISREG(fd_stat.st_mode)) {
 			/* Regular file, remove the fd from m->handler.regular_events */
 			memmove(m->handler.regular_revents + *i, m->handler.regular_revents + *i + 1,
@@ -2407,10 +2404,6 @@ struct event *event_fetch(struct event_loop *m, struct event *fetch)
 		       m->handler.copycount * sizeof(struct pollfd));
 #endif
 
-// #if EPOLL_ENABLED
-// 		hash_iterate(m->handler.epoll_event_hash, debug_iter, NULL);
-// 		zlog_tls_buffer_flush();
-// #endif
 		pthread_mutex_unlock(&m->mtx);
 		{
 			eintr_p = false;
