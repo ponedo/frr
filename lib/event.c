@@ -2063,7 +2063,7 @@ static inline void thread_process_io_inner_loop(struct event_loop *m,
 	bool fd_closed;
 
 	fd = revents[*i].data.fd;
-	if (fd == m->io_pipe[0] || fd == m->io_pipe[1])
+	if (fd == m->io_pipe[0])
 		return;
 
 	get_fd_stat(fd, &fd_stat, &fd_closed);
