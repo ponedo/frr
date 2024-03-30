@@ -1502,7 +1502,7 @@ static void event_cancel_rw(struct event_loop *master, int fd, short state,
 			master->handler.regular_revent_count--;
 			master->handler.regular_revents[master->handler.regular_revent_count].data.fd = 0;
 			master->handler.regular_revents[master->handler.regular_revent_count].events = 0;
-		} else if (-1 == epoll_ctl(master->handler.epoll_fd, EPOLL_CTL_DEL, fd, NULL)) {
+		} else if (!fd_closed && -1 == epoll_ctl(master->handler.epoll_fd, EPOLL_CTL_DEL, fd, NULL)) {
 			/* Not regular file, remove the fd from the epoll set */
 			zlog_debug("%s: EPOLL_CTL_DEL error, errno: %d", __func__, errno);
 			zlog_debug("[!] threadmaster: %s | fd: %d",
@@ -2112,7 +2112,7 @@ static inline void thread_process_io_inner_loop(struct event_loop *m,
 			m->handler.regular_revents[m->handler.regular_revent_count].events = 0;
 			/* regular_revents is modified when iterating on it, rollback */
 			*i = *i - 1;
-		} else if (-1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_DEL, fd, NULL)) {
+		} else if (!fd_closed && -1 == epoll_ctl(m->handler.epoll_fd, EPOLL_CTL_DEL, fd, NULL)) {
 			/* Not regular file, remove the fd from the epoll set */
 			zlog_debug("%s: EPOLL_CTL_DEL error, errno: %d", __func__, errno);
 			zlog_debug("[!] threadmaster: %s | fd: %d",
