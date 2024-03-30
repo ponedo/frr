@@ -437,6 +437,13 @@ static void show_event_poll_helper(struct vty *vty, struct event_loop *m)
 	memset(underline, '-', sizeof(underline));
 	underline[sizeof(underline) - 1] = '\0';
 
+	vty_out(vty, "\nShowing epoll FD's count for %s\n", name);
+	vty_out(vty, "----------------------%s\n", underline);
+	for (int i = 0; i < m->handler.eventsize; i++) {
+		if (m->handler.fd_poll_counter[i] > 0)
+			vty_out(vty, "\tfd: %d, event count: %lu\n", i, m->handler.fd_poll_counter[i]);
+	}
+
 	vty_out(vty, "\nShowing epoll FD's for %s\n", name);
 	vty_out(vty, "----------------------%s\n", underline);
 	vty_out(vty, "Count: %u/%d\n",
@@ -751,6 +758,8 @@ struct event_loop *event_master_create(const char *name)
 			rv->io_pipe[0]);
 		exit(1);
 	}
+	rv->handler.fd_poll_counter =
+		XCALLOC(MTYPE_EVENT_MASTER, sizeof(unsigned long) * rv->handler.eventsize);
 #else
 	/* Initialize data structures for poll() */
 	rv->handler.pfdsize = rv->fd_limit;
@@ -882,6 +891,7 @@ void event_master_free(struct event_loop *m)
 	hash_clean_and_free(&(m->handler.epoll_event_hash), epoll_event_del);
 	XFREE(MTYPE_EVENT_MASTER, m->handler.revents);
 	XFREE(MTYPE_EVENT_MASTER, m->handler.regular_revents);
+	XFREE(MTYPE_EVENT_MASTER, m->handler.fd_poll_counter);
 #else
 	XFREE(MTYPE_EVENT_MASTER, m->handler.pfds);
 	XFREE(MTYPE_EVENT_MASTER, m->handler.copy);
@@ -2067,6 +2077,7 @@ static inline void thread_process_io_inner_loop(struct event_loop *m,
 	bool fd_closed;
 
 	fd = revents[*i].data.fd;
+	m->handler.fd_poll_counter[fd] += 1;
 	if (fd == m->io_pipe[0])
 		return;
 

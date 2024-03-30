@@ -77,6 +77,8 @@ struct fd_handler{
 	 */
 	struct epoll_event *regular_revents;
 	int regular_revent_count;
+
+	unsigned long *fd_poll_counter;
 };
 #else
 struct fd_handler {
